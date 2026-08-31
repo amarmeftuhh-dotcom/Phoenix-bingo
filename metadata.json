@@ -1,0 +1,8 @@
+{
+  "name": "Phoenix Bingo VIP",
+  "description": "Ethiopian VIP Live Multiplayer Bingo, Telebirr & CBE Payouts, Real-Time Dynamic Jackpot",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
