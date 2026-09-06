@@ -39,6 +39,10 @@ import { cn } from "@/lib/utils";
 import {
   getStoredBotSettings,
   saveStoredBotSettings,
+  getStoredBonusEnabled,
+  saveStoredBonusEnabled,
+  triggerAddBotTickets,
+  triggerClearBotTickets,
   type BotWinnerForceMode,
   type BotSettings,
 } from "@/lib/botConfig";
@@ -62,6 +66,7 @@ interface AdminViewProps {
   onNavigateFinance?: () => void;
   onBackToGame?: () => void;
   onInjectLiveBots?: (count: number) => void;
+  onClearLiveBots?: () => void;
 }
 
 export type AdminTabType =
@@ -173,6 +178,7 @@ export function AdminView({
   onNavigateFinance,
   onBackToGame,
   onInjectLiveBots,
+  onClearLiveBots,
 }: AdminViewProps) {
   // Authentication
   const [isAuthenticated, setIsAuthenticated] = useState<boolean>(() => {
@@ -184,6 +190,15 @@ export function AdminView({
   });
   const [adminPassword, setAdminPassword] = useState("");
   const [loginError, setLoginError] = useState(false);
+
+  // Bonus Claim (+25 ETB) Toggle State
+  const [bonusClaimEnabled, setBonusClaimEnabled] = useState(getStoredBonusEnabled);
+
+  const handleToggleBonusClaim = (val: boolean) => {
+    setBonusClaimEnabled(val);
+    saveStoredBonusEnabled(val);
+    buzz(10);
+  };
 
   const handleLogout = () => {
     buzz(10);
@@ -319,12 +334,7 @@ export function AdminView({
   // Login Handler
   const handleLogin = (e: FormEvent) => {
     e.preventDefault();
-    if (
-      adminPassword === "Babi2204" ||
-      adminPassword === "bingo1234" ||
-      adminPassword === "admin" ||
-      adminPassword === "1234"
-    ) {
+    if (adminPassword.trim() === "amuka") {
       buzz([10, 30]);
       setIsAuthenticated(true);
       setLoginError(false);
@@ -403,18 +413,29 @@ export function AdminView({
   };
 
   // Live Inject Bots
-  const handleInjectLiveBots = () => {
-    const amt = parseInt(instantBotAmount, 10);
+  const handleInjectLiveBots = (customCount?: number) => {
+    const amt = typeof customCount === "number" ? customCount : parseInt(instantBotAmount, 10);
     if (isNaN(amt) || amt <= 0) {
       alert("እባክዎ ትክክለኛ የቦት ብዛት ያስገቡ!");
       return;
     }
     buzz(15);
+    triggerAddBotTickets(amt);
     if (onInjectLiveBots) {
       onInjectLiveBots(amt);
     }
-    alert(`✅ ${amt} ቦቶች ወደ ጨዋታው ክፍል ገብተው ካርቴላ ወስደዋል!`);
+    alert(`✅ ${amt} ቦቶች ወደ ጨዋታው ገብተው ካርቴላ ወስደዋል!`);
     setInstantBotAmount("");
+  };
+
+  // Clear All Bots (Back to 0)
+  const handleClearAllBots = () => {
+    buzz(15);
+    triggerClearBotTickets();
+    if (onClearLiveBots) {
+      onClearLiveBots();
+    }
+    alert("✅ በጨዋታው ውስጥ ያሉ ቦቶች በሙሉ ጸድተዋል (ክፍሉ ወደ 0 ተመልሷል)!");
   };
 
   // Add Promo Code
@@ -477,7 +498,7 @@ export function AdminView({
             🛡️ PHOENIX BINGO ADMIN
           </h2>
           <p className="mt-1 text-xs font-bold text-slate-400">
-            የአድሚን መቆጣጠሪያ ማዕከል (Babi2204)
+            የአድሚን መቆጣጠሪያ ማዕከል (Restricted Access)
           </p>
 
           <form onSubmit={handleLogin} className="mt-6 space-y-4">
@@ -489,7 +510,7 @@ export function AdminView({
                   setAdminPassword(e.target.value);
                   setLoginError(false);
                 }}
-                placeholder="Enter Password (1234)"
+                placeholder="Enter Master Secret Key..."
                 className="w-full rounded-xl border border-border/80 bg-black/70 px-4 py-3.5 text-center text-base font-bold tracking-widest text-white outline-none focus:border-emerald-400 focus:ring-1 focus:ring-emerald-400"
               />
               {loginError && (
@@ -599,7 +620,7 @@ export function AdminView({
               className="flex w-full items-center justify-center gap-1.5 rounded-xl border border-gold/40 bg-gold/10 py-2 text-xs font-black text-gold hover:bg-gold/20"
             >
               <Landmark className="h-3.5 w-3.5" />
-              <span>💎 ወደ Finance (Papi)</span>
+              <span>💎 ወደ Finance Suite</span>
             </button>
           )}
           {onBackToGame && (
@@ -673,7 +694,7 @@ export function AdminView({
                 className="flex items-center gap-1.5 rounded-xl border border-gold/40 bg-gold/15 px-3 py-1.5 text-xs font-black text-gold hover:bg-gold/25"
               >
                 <Landmark className="h-3.5 w-3.5" />
-                <span>💎 Finance Suite (Papi)</span>
+                <span>💎 Finance Suite</span>
               </button>
             )}
 
@@ -1016,11 +1037,30 @@ export function AdminView({
                   🎮 Master Bot Controls
                 </h3>
 
+                {/* 0. Bonus Claim Toggle (+25 ETB) */}
+                <div className="flex items-center justify-between rounded-xl border border-amber-500/40 bg-amber-950/25 p-3.5 shadow-inner">
+                  <div>
+                    <div className="text-xs font-black text-amber-300 flex items-center gap-1.5">
+                      <span>🎁</span>
+                      <span>+25 ETB የቦነስ በተን አሳይ (Show +25 ETB Bonus Button)</span>
+                    </div>
+                    <div className="text-[11px] text-slate-400">
+                      ይህ ሲበራ ብቻ በዋናው ገጽ ላይ "+25 ETB ቦነስ ይውሰዱ" የሚለው ይወጣል (Default: OFF)
+                    </div>
+                  </div>
+                  <input
+                    type="checkbox"
+                    checked={bonusClaimEnabled}
+                    onChange={(e) => handleToggleBonusClaim(e.target.checked)}
+                    className="h-6 w-6 accent-amber-400 cursor-pointer"
+                  />
+                </div>
+
                 {/* 1. Enable Bots Toggle */}
                 <div className="flex items-center justify-between rounded-xl border border-[#30363d] bg-black/40 p-3.5">
                   <div>
-                    <div className="text-xs font-bold text-white">1. Enable Bots (ቦት ማስገባት)</div>
-                    <div className="text-[11px] text-slate-400">ON ሲሆን ቦቶች በተራ እየተመረጡ ጌም ይገባሉ</div>
+                    <div className="text-xs font-bold text-white">1. Enable Bots Auto-Fill (ቦት በየጊዜው እንዲገባ)</div>
+                    <div className="text-[11px] text-slate-400">ON ሲሆን ቦቶች በካውንትዳውን ሰዓት ካርቴላ ይይዛሉ</div>
                   </div>
                   <input
                     type="checkbox"
@@ -1114,24 +1154,63 @@ export function AdminView({
               {/* Side Panels: Live Inject & Add Bots */}
               <div className="space-y-4">
                 {/* Live Inject */}
-                <div className="rounded-2xl border border-emerald-500/40 border-l-4 border-l-emerald-400 bg-[#161b22] p-4 shadow-lg">
+                <div className="rounded-2xl border border-emerald-500/40 border-l-4 border-l-emerald-400 bg-[#161b22] p-4 shadow-lg space-y-3">
                   <h3 className="text-xs font-black uppercase text-emerald-400">
-                    ⚡ Live Inject (አሁኑኑ ጌም አስገባ)
+                    ⚡ Live Inject (አሁኑኑ ቦት አስገባ)
                   </h3>
-                  <div className="mt-3 flex gap-2">
+                  <div className="flex gap-2">
                     <input
                       type="number"
                       value={instantBotAmount}
                       onChange={(e) => setInstantBotAmount(e.target.value)}
-                      placeholder="ብዛት (e.g. 50)"
+                      placeholder="ብዛት (e.g. 20)"
                       className="w-full rounded-xl border border-[#30363d] bg-black px-3 py-2 text-xs text-white outline-none focus:border-emerald-400"
                     />
                     <button
                       type="button"
-                      onClick={handleInjectLiveBots}
-                      className="rounded-xl bg-emerald-500 px-4 py-2 text-xs font-black text-black hover:bg-emerald-400"
+                      onClick={() => handleInjectLiveBots()}
+                      className="rounded-xl bg-emerald-500 px-4 py-2 text-xs font-black text-black hover:bg-emerald-400 active:scale-95"
                     >
                       🔥 አስገባ
+                    </button>
+                  </div>
+
+                  {/* Quick Bot Buttons */}
+                  <div className="pt-2 border-t border-[#30363d] space-y-2">
+                    <div className="text-[11px] font-bold text-slate-300">ፈጣን መጨመሪያ፦</div>
+                    <div className="grid grid-cols-3 gap-2">
+                      <button
+                        type="button"
+                        onClick={() => handleInjectLiveBots(5)}
+                        className="rounded-xl border border-emerald-500/40 bg-emerald-500/20 py-2 text-xs font-black text-emerald-300 hover:bg-emerald-500/30 active:scale-95"
+                      >
+                        +5 ቦት
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleInjectLiveBots(10)}
+                        className="rounded-xl border border-cyan-500/40 bg-cyan-500/20 py-2 text-xs font-black text-cyan-300 hover:bg-cyan-500/30 active:scale-95"
+                      >
+                        +10 ቦት
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleInjectLiveBots(25)}
+                        className="rounded-xl border border-amber-500/40 bg-amber-500/20 py-2 text-xs font-black text-amber-300 hover:bg-amber-500/30 active:scale-95"
+                      >
+                        +25 ቦት
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Clear All Bots */}
+                  <div className="pt-2 border-t border-[#30363d]">
+                    <button
+                      type="button"
+                      onClick={handleClearAllBots}
+                      className="w-full rounded-xl border border-red-500/40 bg-red-500/15 py-2.5 text-xs font-black text-red-400 hover:bg-red-500/25 active:scale-95 flex items-center justify-center gap-1.5"
+                    >
+                      <span>🧹 ሁሉንም ቦቶች አጽዳ (ክፍሉን ባዶ አድርግ)</span>
                     </button>
                   </div>
                 </div>
