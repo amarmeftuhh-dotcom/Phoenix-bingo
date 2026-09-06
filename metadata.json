@@ -1,0 +1,6 @@
+{
+  "name": "Phoenix Bingo",
+  "description": "Standard 75-ball Telegram-style Bingo app with live draw, ticket selection, wallet, rank leaderboard, and user profile.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
