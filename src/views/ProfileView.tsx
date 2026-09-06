@@ -28,7 +28,7 @@ import { buzz } from "@/lib/bingo";
 import { cn } from "@/lib/utils";
 import { isSoundMuted, setSoundMuted, playBallChime } from "@/lib/sound";
 
-const REF_LINK = "https://t.me/PhoenixBingoBot?start=ref_AMAR932";
+const REF_LINK = "https://t.me/Phoenix_Bingo_Bot?start=ref_AMAR932";
 
 export function ProfileView({
   onOpenPromoModal,
@@ -401,7 +401,7 @@ export function ProfileView({
                 </p>
 
                 <p className="flex items-start gap-2">
-                  <span className="shrink-0 text-base leading-none">3️⃣</span>
+                  href="https://t.me/Phonix_s"
                   <span>
                     <strong className="text-sky-400 font-bold">የጨዋታው ሂደት:</strong> ካርድ ሲገዙ ከ 1 እስከ 75 ባሉት ቁጥሮች የተሞላ 5x5 ካርቴላ ይሰጥዎታል። ጨዋታው ሲጀመር ሲስተሙ በየ 3 ሰከንዱ ቁጥሮችን ይጠራል። ሲስተሙ ራሱ ያጠቁርልዎታል (ምንም መንካት አይጠበቅብዎትም)።
                   </span>
