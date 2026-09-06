@@ -18,14 +18,14 @@ export interface BotSettings {
 }
 
 const DEFAULT_BOT_SETTINGS: BotSettings = {
-  isBotSystemActive: true,
+  isBotSystemActive: false, // Default to FALSE: Start clean from 0 like a real game
   botWinnerForce: "ai",
   botD1: 5,
   botD2: 4,
   botD3: 3,
   botD4: 3,
-  minBots: 60,
-  maxBots: 180,
+  minBots: 0,
+  maxBots: 50,
 };
 
 export function getStoredBotSettings(): BotSettings {
@@ -44,3 +44,28 @@ export function saveStoredBotSettings(settings: BotSettings) {
     window.dispatchEvent(new CustomEvent("phoenix_bot_settings_updated", { detail: settings }));
   } catch {}
 }
+
+// 🎁 +25 ETB Bonus Button Toggle (Admin Controlled - Default OFF)
+export function getStoredBonusEnabled(): boolean {
+  try {
+    return localStorage.getItem("phoenix_bonus_promo_enabled") === "true";
+  } catch {}
+  return false;
+}
+
+export function saveStoredBonusEnabled(enabled: boolean) {
+  try {
+    localStorage.setItem("phoenix_bonus_promo_enabled", enabled ? "true" : "false");
+    window.dispatchEvent(new CustomEvent("phoenix_bonus_toggle_updated", { detail: enabled }));
+  } catch {}
+}
+
+// 🤖 Admin Manual Bot Injection helpers
+export function triggerAddBotTickets(count: number) {
+  window.dispatchEvent(new CustomEvent("phoenix_admin_add_bots", { detail: count }));
+}
+
+export function triggerClearBotTickets() {
+  window.dispatchEvent(new CustomEvent("phoenix_admin_clear_bots"));
+}
+
