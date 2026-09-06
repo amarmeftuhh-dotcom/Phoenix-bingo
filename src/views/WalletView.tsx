@@ -32,8 +32,8 @@ const METHODS = [
     id: "telebirr",
     label: "Telebirr",
     subtitle: "Ethio Telecom Instant",
-    accountNumber: "0932849138",
-    accountHolder: "Phoenix VIP Official",
+    accountNumber: "+251956998368",
+    accountHolder: "Phoenix Bingo Official",
     icon: Smartphone,
     color: "from-sky-500/20 to-blue-600/20 text-sky-400 border-sky-500/40",
     badge: "Instant ⚡",
@@ -42,8 +42,8 @@ const METHODS = [
     id: "cbe",
     label: "CBE / Commercial Bank",
     subtitle: "Commercial Bank of Ethiopia",
-    accountNumber: "1000492819382",
-    accountHolder: "Phoenix Entertainment PLC",
+    accountNumber: "+251956998368",
+    accountHolder: "Phoenix Bingo Official",
     icon: Building2,
     color: "from-purple-500/20 to-amber-600/20 text-amber-400 border-amber-500/40",
     badge: "24/7 Auto",
@@ -52,14 +52,13 @@ const METHODS = [
     id: "mpesa",
     label: "M-Pesa Safaricom",
     subtitle: "Safaricom Ethiopia",
-    accountNumber: "0712938491",
-    accountHolder: "Phoenix Safaricom M-Pesa",
+    accountNumber: "+251956998368",
+    accountHolder: "Phoenix Bingo Safaricom",
     icon: CreditCard,
     color: "from-emerald-500/20 to-teal-600/20 text-emerald-400 border-emerald-500/40",
     badge: "Fast 🚀",
   },
 ];
-
 const INITIAL_TX = [
   {
     id: "TX-9982",
