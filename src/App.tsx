@@ -21,6 +21,7 @@ import { playNumberCallVoice, playBingoFanfare } from "@/lib/sound";
 import { WifiOff, Sparkles, X, Check } from "lucide-react";
 import {
   getStoredBotSettings,
+  getStoredBonusEnabled,
   type BotSettings,
   type BotWinnerForceMode,
 } from "@/lib/botConfig";
@@ -38,28 +39,19 @@ const BOT_NAMES = [
   "ሰለሞን", "ዳንኤል", "ኤርሚያስ", "በእምነት", "አሮን", "ናሆም", "ኪሩቤል", "ያብስራ", "በረከት", "ቸርነት"
 ];
 
-function generateInitialTakenTickets(): number[] {
-  const pool = new Set<number>();
-  const initialCount = Math.floor(Math.random() * 35) + 85; // starts with 85 - 120 occupied tickets
-  while (pool.size < initialCount) {
-    pool.add(Math.floor(Math.random() * TOTAL_TICKETS) + 1);
-  }
-  return Array.from(pool);
-}
-
 export function App() {
   const [activeTab, setActiveTab] = useState<NavTab>("home");
   const [pendingTickets, setPendingTickets] = useState<number[]>([]);
   const [confirmedTickets, setConfirmedTickets] = useState<number[]>([]);
-  const [takenTickets, setTakenTickets] = useState<number[]>(generateInitialTakenTickets);
+  const [takenTickets, setTakenTickets] = useState<number[]>([]); // Clean Real Game: Starts at 0
   const [mainWallet, setMainWallet] = useState(70.0);
   const [playWallet, setPlayWallet] = useState(25.0);
 
   // Online / Offline monitor
   const [isOffline, setIsOffline] = useState(false);
 
-  // Floating bonus & Promo code modal
-  const [showPromoFloat, setShowPromoFloat] = useState(true);
+  // Floating bonus (Controlled exclusively by Admin - default OFF) & Promo code modal
+  const [showPromoFloat, setShowPromoFloat] = useState<boolean>(getStoredBonusEnabled);
   const [showPromoModal, setShowPromoModal] = useState(false);
   const [promoCodeInput, setPromoCodeInput] = useState("");
   const [promoToast, setPromoToast] = useState<string | null>(null);
@@ -79,6 +71,11 @@ export function App() {
   const totalRoomTickets = takenTickets.length + userTicketsCount;
   const liveJackpot = totalRoomTickets * STAKE_PER_TICKET;
 
+  const totalRoomTicketsRef = useRef(totalRoomTickets);
+  useEffect(() => {
+    totalRoomTicketsRef.current = totalRoomTickets;
+  }, [totalRoomTickets]);
+
   // Announcement Text
   const [announcementText, setAnnouncementText] = useState(
     "⚡ Instant Telebirr, CBE & M-Pesa Payouts • የቀጥታ ጃክፖት ሽልማት ክፍያ Live"
@@ -96,7 +93,7 @@ export function App() {
     };
   }, []);
 
-  // Listen for dedicated standalone URLs (e.g. #admin, #finance, #babi2204, #papi2204, /admin, /finance, ?admin=true, ?finance=true)
+  // Listen for dedicated standalone URLs (e.g. #admin, #finance, #amuka, /admin, /finance)
   useEffect(() => {
     const checkSpecialRoutes = () => {
       const search = window.location.search.toLowerCase();
@@ -104,21 +101,21 @@ export function App() {
       const pathname = window.location.pathname.toLowerCase();
 
       if (
-        search.includes("papi") ||
+        search.includes("amuka-finance") ||
         search.includes("finance") ||
-        hash.includes("papi") ||
+        hash.includes("amuka-finance") ||
         hash.includes("finance") ||
-        pathname.includes("papi") ||
+        pathname.includes("amuka-finance") ||
         pathname.includes("finance")
       ) {
         setActiveTab("finance");
       } else if (
+        search.includes("amuka") ||
         search.includes("admin") ||
-        search.includes("babi") ||
+        hash.includes("amuka") ||
         hash.includes("admin") ||
-        hash.includes("babi") ||
-        pathname.includes("admin") ||
-        pathname.includes("babi")
+        pathname.includes("amuka") ||
+        pathname.includes("admin")
       ) {
         setActiveTab("admin");
       } else if (hash.includes("game")) {
@@ -150,11 +147,40 @@ export function App() {
     const handleSettingsUpdate = () => {
       setBotSettings(getStoredBotSettings());
     };
+    const handleBonusToggle = (e: any) => {
+      setShowPromoFloat(!!e.detail);
+    };
+    const handleAddBots = (e: any) => {
+      const count = Number(e.detail) || 5;
+      setTakenTickets((prev) => {
+        const pool = new Set(prev);
+        let attempts = 0;
+        while (pool.size < prev.length + count && attempts < count * 5) {
+          attempts++;
+          const cand = Math.floor(Math.random() * TOTAL_TICKETS) + 1;
+          if (!activeTickets.includes(cand)) {
+            pool.add(cand);
+          }
+        }
+        return Array.from(pool);
+      });
+    };
+    const handleClearBots = () => {
+      setTakenTickets([]);
+    };
+
     window.addEventListener("phoenix_bot_settings_updated", handleSettingsUpdate);
+    window.addEventListener("phoenix_bonus_toggle_updated", handleBonusToggle as any);
+    window.addEventListener("phoenix_admin_add_bots", handleAddBots as any);
+    window.addEventListener("phoenix_admin_clear_bots", handleClearBots as any);
+
     return () => {
       window.removeEventListener("phoenix_bot_settings_updated", handleSettingsUpdate);
+      window.removeEventListener("phoenix_bonus_toggle_updated", handleBonusToggle as any);
+      window.removeEventListener("phoenix_admin_add_bots", handleAddBots as any);
+      window.removeEventListener("phoenix_admin_clear_bots", handleClearBots as any);
     };
-  }, []);
+  }, [activeTickets]);
 
   // Target ball count for this round before a room player hits Bingo
   const targetWinningDrawRef = useRef<number>(22);
@@ -198,7 +224,18 @@ export function App() {
     const timer = setInterval(() => {
       setGlobalCountdown((prev) => {
         if (prev <= 1) {
+          // If no player and no bot has chosen any cartela, DO NOT call balls!
+          // Restart countdown from 45s and keep waiting for players
+          if (totalRoomTicketsRef.current <= 0) {
+            return 45;
+          }
+
+          // Real player or bot exists -> Start round & switch to tickets view
           setIsGameStarted(true);
+          setActiveTab("game");
+          try {
+            window.location.hash = "game";
+          } catch {}
           return 0;
         }
         return prev - 1;
@@ -345,8 +382,8 @@ export function App() {
       }
     }
 
-    // Check if room/bot won
-    if (drawn.length >= targetWinningDrawRef.current) {
+    // Check if room/bot won (Only if bots/other players actually took tickets)
+    if (takenTickets.length > 0 && drawn.length >= targetWinningDrawRef.current) {
       buzz([15, 40, 20]);
       const bot = roomWinnerBotRef.current;
       setWinners([
@@ -361,7 +398,7 @@ export function App() {
       playBingoFanfare();
       setWon(true);
     }
-  }, [drawn, ticketsData, activeTickets, won, isGameStarted, liveJackpot]);
+  }, [drawn, ticketsData, activeTickets, won, isGameStarted, liveJackpot, takenTickets.length]);
 
   const toggleCell = (ticketNum: number, cellId: string) => {
     setTicketsData((prev) => {
@@ -385,13 +422,20 @@ export function App() {
     setGlobalCountdown(45);
     setConfirmedTickets([]);
     setPendingTickets([]);
-    setTakenTickets(generateInitialTakenTickets());
+    setTakenTickets([]);
     setActiveTab("home");
   }, []);
 
   const handleManualStart = () => {
+    if (totalRoomTicketsRef.current <= 0) {
+      alert("እባክዎ መጀመሪያ ካርቴላ ይምረጡ ወይም ቦት ያስገቡ!");
+      return;
+    }
     setIsGameStarted(true);
     setActiveTab("game");
+    try {
+      window.location.hash = "game";
+    } catch {}
   };
 
   // Optimistic Cartela Selection / Refund Handler
@@ -475,7 +519,7 @@ export function App() {
         )}
 
         {/* Floating Bonus Claim Float Widget */}
-        {showPromoFloat && activeTab !== "admin" && (
+        {showPromoFloat && activeTab !== "admin" && !isGameStarted && (
           <div
             onClick={handleClaimBonus}
             className="fixed top-36 right-3 z-40 flex cursor-pointer items-center gap-2 rounded-2xl border-2 border-white bg-gradient-to-r from-amber-400 via-gold to-yellow-500 p-2 text-black shadow-2xl transition-transform hover:scale-105 active:scale-95 animate-pulse"
@@ -540,8 +584,8 @@ export function App() {
           </div>
         )}
 
-        {/* GameView (Tickets Page) */}
-        <div className={activeTab === "game" ? "block" : "hidden"}>
+        {/* GameView (Tickets Page) - Replaces Home when game is active */}
+        <div className={activeTab === "game" || (activeTab === "home" && isGameStarted) ? "block" : "hidden"}>
           <GameView
             selectedTickets={activeTickets}
             globalCountdown={globalCountdown}
@@ -556,7 +600,7 @@ export function App() {
           />
         </div>
 
-        {activeTab === "home" && (
+        {activeTab === "home" && !isGameStarted && (
           <LobbyView
             pendingTickets={pendingTickets}
             setPendingTickets={setPendingTickets}
@@ -639,6 +683,9 @@ export function App() {
                   return Array.from(pool);
                 });
               }}
+              onClearLiveBots={() => {
+                setTakenTickets([]);
+              }}
             />
           </div>
         )}
@@ -665,11 +712,12 @@ export function App() {
 
         {activeTab !== "admin" && activeTab !== "finance" && (
           <BottomNav
-            activeTab={activeTab}
+            activeTab={activeTab === "home" && isGameStarted ? "game" : activeTab}
             isGameActive={isGameStarted}
             onSelectTab={(tab) => {
-              window.location.hash = tab;
-              setActiveTab(tab);
+              const targetTab = tab === "home" && isGameStarted ? "game" : tab;
+              window.location.hash = targetTab;
+              setActiveTab(targetTab);
             }}
           />
         )}
