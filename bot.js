@@ -10,7 +10,7 @@ const fs = require("fs");
 const path = require("path");
 
 // 1. የቦት TOKEN እና የእርስዎ ኦፊሴላዊ የ Render ሊንክ
-const BOT_TOKEN = process.env.BOT_TOKEN || "8606075616:AAEFVgE-_lIz33iYUBB6fzcWYPwXOm4f72g";
+const BOT_TOKEN = process.env.BOT_TOKEN || "8606075616:AAFmq_dQ_eCRDzEqnw5N2Ybc9_dkOS5BiDg";
 const WEBAPP_URL = process.env.WEBAPP_URL || "https://phoenix-bingo.onrender.com/#home";
 
 // 2. የአድሚን እና የክፍያ መረጃዎች
