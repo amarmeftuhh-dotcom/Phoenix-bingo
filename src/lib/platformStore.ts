@@ -104,7 +104,7 @@ export function getStoredPlayer(): PlayerProfile {
         isVerified: !!tgUser,
         isAutoLoggedIn: !!tgUser,
         mainWallet: 0.0,
-        playWallet: 0.0,
+        playWallet: 15.0,
         gamesPlayed: 0,
         totalWon: 0,
         joinedAt: new Date().toLocaleDateString("en-US", { month: "short", day: "numeric" }),
@@ -142,7 +142,23 @@ export function getStoredPlayer(): PlayerProfile {
 
   return baseProfile;
 }
+export function getStoredWalletBalances(): { mainWallet: number; playWallet: number } {
+  const player = getStoredPlayer();
+  return {
+    mainWallet: typeof player.mainWallet === "number" && !isNaN(player.mainWallet) ? player.mainWallet : 0.0,
+    playWallet: typeof player.playWallet === "number" && !isNaN(player.playWallet) ? player.playWallet : 15.0,
+  };
+}
 
+export function saveStoredWalletBalances(mainWallet: number, playWallet: number) {
+  try {
+    const player = getStoredPlayer();
+    player.mainWallet = mainWallet;
+    player.playWallet = playWallet;
+    saveStoredPlayer(player);
+    window.dispatchEvent(new CustomEvent("phoenix_wallet_updated", { detail: { mainWallet, playWallet } }));
+  } catch {}
+}
 export function saveStoredPlayer(player: PlayerProfile) {
   try {
     localStorage.setItem(STORAGE_KEY_PLAYER, JSON.stringify(player));
