@@ -20,6 +20,12 @@ import {
 import { playNumberCallVoice, playBingoFanfare } from "@/lib/sound";
 import { WifiOff, Sparkles, X, Check } from "lucide-react";
 import {
+  import {
+  getStoredPlayer,
+  saveStoredPlayer,
+  getStoredWalletBalances,
+  saveStoredWalletBalances,
+} from "@/lib/platformStore";
   getStoredBotSettings,
   getStoredBonusEnabled,
   type BotSettings,
@@ -44,9 +50,28 @@ export function App() {
   const [pendingTickets, setPendingTickets] = useState<number[]>([]);
   const [confirmedTickets, setConfirmedTickets] = useState<number[]>([]);
   const [takenTickets, setTakenTickets] = useState<number[]>([]); // Clean Real Game: Starts at 0
-  const [mainWallet, setMainWallet] = useState(70.0);
-  const [playWallet, setPlayWallet] = useState(25.0);
+  const [mainWallet, setMainWallet] = useState<number>(() => getStoredWalletBalances().mainWallet);
+  const [playWallet, setPlayWallet] = useState<number>(() => getStoredWalletBalances().playWallet);
 
+  // Sync balances persistently with localStorage & platform store
+  useEffect(() => {
+    saveStoredWalletBalances(mainWallet, playWallet);
+  }, [mainWallet, playWallet]);
+
+  // Real-time synchronization when platformStore or Telegram updates balances
+  useEffect(() => {
+    const handleWalletSync = () => {
+      const b = getStoredWalletBalances();
+      setMainWallet(b.mainWallet);
+      setPlayWallet(b.playWallet);
+    };
+    window.addEventListener("phoenix_wallet_updated", handleWalletSync);
+    window.addEventListener("phoenix_player_updated", handleWalletSync);
+    return () => {
+      window.removeEventListener("phoenix_wallet_updated", handleWalletSync);
+      window.removeEventListener("phoenix_player_updated", handleWalletSync);
+    };
+  }, []);
   // Online / Offline monitor
   const [isOffline, setIsOffline] = useState(false);
 
@@ -367,10 +392,14 @@ export function App() {
       if (checkBingo(evaluatedCells)) {
         buzz([20, 50, 20, 50, 40]);
         setMainWallet((prev) => prev + liveJackpot);
+        const player = getStoredPlayer();
+        player.totalWon = (player.totalWon || 0) + liveJackpot;
+        player.gamesPlayed = (player.gamesPlayed || 0) + 1;
+        saveStoredPlayer(player);
         setWinners([
           {
-            name: "እርስዎ (You)",
-            phone: "0932***38",
+            name: `${player.name} (እርስዎ)`,
+            phone: player.phone ? player.phone.slice(0, 4) + "***" + player.phone.slice(-2) : "09***38",
             ticket: num,
             amount: liveJackpot,
             isUser: true,
@@ -380,7 +409,6 @@ export function App() {
         setWon(true);
         return;
       }
-    }
 
     // Check if room/bot won (Only if bots/other players actually took tickets)
     if (takenTickets.length > 0 && drawn.length >= targetWinningDrawRef.current) {
