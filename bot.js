@@ -1,21 +1,22 @@
 /**
- * Phoenix Bingo - Production Telegram Bot Server with STRICT Phone Verification Gate
+ * Phoenix Bingo - Production Telegram Bot Server
+ * Single-Instance Polling, Clean Single Messages, 15 ETB Play Wallet, Password Generation.
  */
 
 import https from "node:https";
 import http from "node:http";
 import { MongoClient } from "mongodb";
 
-// 1. Render Web Service Health Check Server
+// 1. Render Health Check Server (Port 10000)
 const PORT = process.env.PORT || 10000;
 http.createServer((req, res) => {
   res.writeHead(200, { "Content-Type": "text/plain" });
-  res.end("Phoenix Bingo Bot is running 24/7 with MongoDB Atlas!\n");
+  res.end("Phoenix Bingo Bot is running 24/7!\n");
 }).listen(PORT, () => {
-  console.log("HTTP health-check server listening on port " + PORT);
+  console.log("Health check server listening on port " + PORT);
 });
 
-// 2. Constants & Settings
+// 2. Settings
 const BOT_TOKEN = process.env.BOT_TOKEN || "8606075616:AAFmq_dQ_eCRDzEqnw5N2Ybc9_dkOS5BiDg";
 const WEBAPP_URL = process.env.WEBAPP_URL || "https://phoenix-bingo.onrender.com/#home";
 const MONGO_URI = process.env.MONGO_URI || "mongodb+srv://Phoenix:761724@cluster0.pivq9lg.mongodb.net/phoenix_bingo?retryWrites=true&w=majority";
@@ -26,10 +27,10 @@ const ADMIN_CONFIG = {
   telebirrNumber: "+251956998368",
   cbeAccount: "+251956998368",
   minWithdraw: 50,
-  initialBonus: 10,
+  initialPlayBonus: 15.00, // 15 ETB መጫወቻ ቦነስ
 };
 
-// 📱 ስልኩን ያላረጋገጠ ሰው የሚያየው አንድ እና ብቸኛ ቁልፍ
+// ስልኩን ያላጋራ ሰው የሚያየው ብቸኛ ቁልፍ
 const CONTACT_KEYBOARD = {
   keyboard: [
     [
@@ -43,7 +44,7 @@ const CONTACT_KEYBOARD = {
   one_time_keyboard: false,
 };
 
-// 🎮 ስልኩን ያረጋገጠ ሰው ብቻ የሚያየው ዋና ኪቦርድ
+// ስልኩን ያረጋገጠ ሰው የሚያየው ዋና ኪቦርድ (በብሮውዘር ክፈት የሌለበት!)
 function getVerifiedKeyboard(user) {
   const playUrl = WEBAPP_URL + "?tgId=" + user.userId + "&phone=" + encodeURIComponent(user.phone || "") + "&name=" + encodeURIComponent(user.name || "");
   return {
@@ -69,39 +70,51 @@ async function getDatabase() {
     dbClient = new MongoClient(MONGO_URI, { serverSelectionTimeoutMS: 10000 });
     await dbClient.connect();
     db = dbClient.db("phoenix_bingo");
-    console.log("🍃 MongoDB Atlas database connection established!");
+    console.log("🍃 MongoDB Atlas connected successfully!");
     return db;
   } catch (err) {
-    console.error("MongoDB Connection Error:", err.message);
+    console.error("MongoDB Error:", err.message);
     return null;
   }
 }
 
+// አጭር የይለፍ ቃል ማመንጫ (6 ፊደላት)
+function generatePassword() {
+  return Math.random().toString(36).substring(2, 8);
+}
+
+// ተጠቃሚን በ MongoDB መመዝገብ
 async function getOrCreateUser(userId, userName, username) {
   const database = await getDatabase();
   if (!database) {
-    return { userId: String(userId), name: userName, phone: "", balance: 0, bonus: 10, totalWon: 0 };
+    return { userId: String(userId), name: userName, phone: "", balance: 0, bonus: ADMIN_CONFIG.initialPlayBonus, password: generatePassword() };
   }
   const usersCollection = database.collection("users");
   
   let user = await usersCollection.findOne({ userId: String(userId) });
   if (!user) {
+    const password = generatePassword();
     user = {
       userId: String(userId),
       name: userName || "ተጫዋች",
       username: username ? "@" + username : "",
       phone: "",
-      balance: 0,
-      bonus: ADMIN_CONFIG.initialBonus,
-      totalWon: 0,
+      password: password,
+      balance: 0.00, // ዋና ሂሳብ: 0.00 ETB
+      bonus: ADMIN_CONFIG.initialPlayBonus, // መጫወቻ ሂሳብ: 15.00 ETB
+      totalWon: 0.00,
       createdAt: new Date(),
       lastSeen: new Date(),
       status: "active",
-      hasClaimedBonus: true,
     };
     await usersCollection.insertOne(user);
-    console.log("👤 New user in MongoDB: " + userName + " (" + userId + ")");
+    console.log("👤 New user registered: " + userName + " with 15 ETB play bonus!");
   } else {
+    if (!user.password) {
+      const password = generatePassword();
+      await usersCollection.updateOne({ userId: String(userId) }, { $set: { password: password } });
+      user.password = password;
+    }
     await usersCollection.updateOne(
       { userId: String(userId) },
       { $set: { lastSeen: new Date(), name: userName || user.name } }
@@ -110,14 +123,16 @@ async function getOrCreateUser(userId, userName, username) {
   return user;
 }
 
+// ስልክ ቁጥር ማረጋገጥ
 async function registerUserPhone(userId, phone) {
   const database = await getDatabase();
   if (!database) return phone;
   const usersCollection = database.collection("users");
   
   let cleanPhone = String(phone).replace(/\s+/g, "");
-  if (cleanPhone.startsWith("0")) cleanPhone = "+251" + cleanPhone.substring(1);
-  if (cleanPhone.startsWith("251")) cleanPhone = "+" + cleanPhone;
+  if (cleanPhone.startsWith("+251")) cleanPhone = "0" + cleanPhone.substring(4);
+  else if (cleanPhone.startsWith("251")) cleanPhone = "0" + cleanPhone.substring(3);
+  else if (!cleanPhone.startsWith("0")) cleanPhone = "0" + cleanPhone;
 
   await usersCollection.updateOne(
     { userId: String(userId) },
@@ -126,6 +141,7 @@ async function registerUserPhone(userId, phone) {
   return cleanPhone;
 }
 
+// ቴሌግራም ጥሪ
 function telegramRequest(method, data) {
   return new Promise((resolve) => {
     const payload = JSON.stringify(data);
@@ -158,6 +174,7 @@ function telegramRequest(method, data) {
   });
 }
 
+// መልእክት መላኪያ
 async function sendMessage(chatId, text, replyMarkup) {
   return await telegramRequest("sendMessage", {
     chat_id: chatId,
@@ -168,15 +185,17 @@ async function sendMessage(chatId, text, replyMarkup) {
   });
 }
 
+// ደረሰኝ ለአድሚን ማስተላለፊያ
 async function forwardDepositToAdmin(user, update) {
-  const textMsg = update.message.text || "(ፎቶ/ደረሰኝ ስክሪንሾት)";
+  const textMsg = update.message.text || "(ደረሰኝ/ስክሪንሾት ነው)";
   const adminNotification = [
     "📥 <b>አዲስ የገንዘብ ገቢ (Deposit) ደረሰኝ!</b>",
     "━━━━━━━━━━━━━━━━━━",
     "👤 <b>ተጫዋች:</b> " + user.name,
     "🆔 <b>የቴሌግራም ID:</b> <code>" + user.userId + "</code>",
     "📱 <b>ስልክ:</b> <code>" + (user.phone || "አልተገኘም") + "</code>",
-    "💵 <b>የአሁኑ ቀሪ ሂሳብ:</b> " + (user.balance || 0) + " ETB",
+    "💵 <b>ዋና ሂሳብ:</b> " + (user.balance || 0).toFixed(2) + " ETB",
+    "🎁 <b>መጫወቻ ሂሳብ:</b> " + (user.bonus || 0).toFixed(2) + " ETB",
     "━━━━━━━━━━━━━━━━━━",
     "📝 <b>የላከው መልእክት/ደረሰኝ፦</b>",
     textMsg,
@@ -202,6 +221,7 @@ async function forwardDepositToAdmin(user, update) {
   await sendMessage(user.userId, confirmUser, getVerifiedKeyboard(user));
 }
 
+// ዋናው መልእክት ተቀባይ
 async function handleUpdate(update) {
   let chatId, rawText, userName, userId, username;
 
@@ -224,7 +244,7 @@ async function handleUpdate(update) {
 
   const user = await getOrCreateUser(userId, userName, username);
 
-  // 1. 📱 ተጠቃሚው ስልኩን ሲያጋራ
+  // 1. 📱 ተጠቃሚው ስልክ ቁጥሩን ሲያጋራ
   if (update.message && update.message.contact) {
     const contactPhone = update.message.contact.phone_number;
     const cleanPhone = await registerUserPhone(userId, contactPhone);
@@ -233,33 +253,36 @@ async function handleUpdate(update) {
     const playUrl = WEBAPP_URL + "?tgId=" + userId + "&phone=" + encodeURIComponent(cleanPhone) + "&name=" + encodeURIComponent(userName);
 
     const welcomeMsg = [
-      "🎉 <b>እንኳን ደስ አለዎት፣ " + userName + "!</b>",
-      "ስልክ ቁጥርዎ በትክክል ተረጋግጧል! ✅",
+      "🎉 <b>እንኳን ደስ አሎት " + userName + "! ምዝገባው ተጠናቋል።</b>",
       "",
-      "📱 <b>የተመዘገበው ስልክ:</b> <code>" + cleanPhone + "</code>",
-      "🎁 <b>የመጀመሪያ ቦነስ:</b> <b>10.00 ETB</b> ወደ ዋሌትዎ ገብቷል!",
-      "🔒 <b>የደህንነት ማስታወሻ:</b> ያሸነፉትን ገንዘብ ወጪ ማድረግ የሚችሉት በዚህ ስልክ ቁጥር ብቻ ነው።",
+      "👤 <b>የእርስዎ ፕሮፋይል</b>",
       "",
-      "👇 <b>ከታች ያለውን ሰማያዊ ቁልፍ ተጭነው አሁኑኑ ይጫወቱ፦</b>"
+      "🔹 <b>ስም:</b> " + userName,
+      "🔹 <b>ስልክ:</b> <code>" + cleanPhone + "</code>",
+      "🔑 <b>የይለፍ ቃል:</b> <code>" + user.password + "</code>",
+      "",
+      "💰 <b>መጫወቻ ሂሳብ:</b> <b>" + (user.bonus || 15).toFixed(2) + " ETB</b>",
+      "💰 <b>ዋና ሂሳብ:</b> <b>" + (user.balance || 0).toFixed(2) + " ETB</b>",
+      "",
+      "👇 <b>ጌሙን ለመጀመር ከታች '🎮 ጌም ይጫወቱ (PLAY)' የሚለውን ይጫኑ።</b>"
     ].join("\n");
 
-    const inlinePlay = {
+    const singlePlayButton = {
       inline_keyboard: [
-        [{ text: "🎮 ካርቴላ ቢንጎ ተጫወት (PLAY BINGO)", web_app: { url: playUrl } }],
-        [{ text: "🌐 በብሮውዘር ክፈት (Open Link)", url: playUrl }],
+        [{ text: "🎮 ጌም ይጫወቱ (PLAY)", web_app: { url: playUrl } }],
       ],
     };
 
-    await sendMessage(chatId, welcomeMsg, inlinePlay);
+    await sendMessage(chatId, welcomeMsg, singlePlayButton);
     return;
   }
 
-  // 2. 🛑 ወሳኝ ጥበቃ፦ ስልኩን እስካላጋራ ድረስ የጨዋታው ሊንክ ፈጽሞ አይታይም!
+  // 2. 🛑 ስልኩን ያላጋራ ሰው ሌላ ምንም ነገር እንዳያይ መከልከል (ብቸኛ መልእክት)
   if (!user.phone) {
     const askPhoneMsg = [
       "🇪🇹 <b>እንኳን ወደ ፊኒክስ ቢንጎ በደህና መጡ!</b> 🦅",
       "",
-      "ወደ ጨዋታው ለመግባት፣ የ <b>10 ETB</b> የመጀመሪያ ቦነስ ለመውሰድ እና አካውንትዎ ደህንነቱ የተጠበቀ እንዲሆን <b>ስልክ ቁጥርዎን ማጋራት ግዴታ ነው</b>።",
+      "ወደ ጨዋታው ለመግባት፣ የ <b>15.00 ETB</b> መጫወቻ ቦነስ ለመውሰድ እና አካውንትዎ ደህንነቱ የተጠበቀ እንዲሆን <b>ስልክ ቁጥርዎን ማጋራት ግዴታ ነው</b>።",
       "",
       "👇 <b>ከታች ያለውን «📱 ስልክ ቁጥርዎን ያጋሩ» የሚለውን ቁልፍ ይጫኑ፦</b>"
     ].join("\n");
@@ -278,31 +301,26 @@ async function handleUpdate(update) {
 
   const text = rawText.toLowerCase();
 
-  // 4. 🎮 ጌም ይጫወቱ (ስልካቸውን ላረጋገጡ ብቻ!)
+  // 4. 🎮 ጌም ይጫወቱ (ስልካቸውን ላረጋገጡ ብቻ — "በብሮውዘር ክፈት" የሌለበት!)
   if (text === "/play" || text === "/start" || text.includes("play") || text.includes("ጌም")) {
     const playUrl = WEBAPP_URL + "?tgId=" + userId + "&phone=" + encodeURIComponent(user.phone) + "&name=" + encodeURIComponent(userName);
     const msg = [
       "🇪🇹 <b>እንኳን ወደ ፊኒክስ ቢንጎ በደህና መጡ፣ " + userName + "!</b> 🎮",
       "",
-      "📱 <b>የተመዘገበው ስልክ:</b> <code>" + user.phone + "</code>",
-      "💵 <b>ዋና ዋሌት:</b> " + (user.balance || 0).toFixed(2) + " ETB",
-      "🎁 <b>ቦነስ ዋሌት:</b> " + (user.bonus || 0).toFixed(2) + " ETB",
+      "📱 <b>ስልክ:</b> <code>" + user.phone + "</code>",
+      "💰 <b>መጫወቻ ሂሳብ:</b> <b>" + (user.bonus || 0).toFixed(2) + " ETB</b>",
+      "💰 <b>ዋና ሂሳብ:</b> <b>" + (user.balance || 0).toFixed(2) + " ETB</b>",
       "",
       "👇 <b>ከታች ያለውን ሰማያዊ ቁልፍ ተጭነው ጨዋታውን ይክፈቱ፦</b>"
     ].join("\n");
 
-    const inlinePlay = {
+    const singlePlayInline = {
       inline_keyboard: [
-        [{ text: "🎮 ካርቴላ ቢንጎ ተጫወት (PLAY BINGO)", web_app: { url: playUrl } }],
-        [{ text: "🌐 በብሮውዘር ክፈት (Open Link)", url: playUrl }],
-        [
-          { text: "💰 ሒሳብ ማረጋገጫ", callback_data: "/account" },
-          { text: "📥 ገንዘብ አስገባ", callback_data: "/deposit" },
-        ],
+        [{ text: "🎮 ጌም ይጫወቱ (PLAY)", web_app: { url: playUrl } }],
       ],
     };
 
-    await sendMessage(chatId, msg, inlinePlay);
+    await sendMessage(chatId, msg, singlePlayInline);
     return;
   }
 
@@ -317,9 +335,11 @@ async function handleUpdate(update) {
       "",
       "👤 <b>ተጫዋች:</b> " + userName,
       "🆔 <b>የቴሌግራም ID:</b> <code>" + userId + "</code>",
-      "📱 <b>የተቆለፈበት ስልክ:</b> <code>" + user.phone + "</code>",
-      "💵 <b>ዋና ዋሌት:</b> <b>" + balanceStr + " ETB</b>",
-      "🎁 <b>ቦነስ ዋሌት:</b> <b>" + bonusStr + " ETB</b>",
+      "📱 <b>የተመዘገበው ስልክ:</b> <code>" + user.phone + "</code>",
+      "🔑 <b>የይለፍ ቃል:</b> <code>" + (user.password || "******") + "</code>",
+      "",
+      "💰 <b>መጫወቻ ሂሳብ (Play Wallet):</b> <b>" + bonusStr + " ETB</b>",
+      "💰 <b>ዋና ሂሳብ (Main Cash Wallet):</b> <b>" + balanceStr + " ETB</b>",
       "🏆 <b>ያሸነፉት ጠቅላላ:</b> <b>" + wonStr + " ETB</b>",
       "",
       "<i>ገንዘብ ገቢ ለማድረግ ከታች «📥 ገቢ ማድረግ» የሚለውን ይጫኑ።</i>"
@@ -351,26 +371,26 @@ async function handleUpdate(update) {
       "",
       "⚠️ <b>ማሳሰቢያ፦</b>",
       "ገንዘቡን ካስተላለፉ በኋላ የደረሰኝ ስክሪንሾት ወይም የቴሌብር SMS መልእክቱን <b>እዚሁ ቦት ላይ ይላኩት!</b>",
-      "ቦቱ በቀጥታ ለአድሚን አስተላልፎ በ 2 ደቂቃ ውስጥ ዋሌትዎ ላይ ይሞላልዎታል!"
+      "ቦቱ በቀጥታ ለአድሚን አስተላልፎ በ 2 ደቂቃ ውስጥ ዋና ሂሳብዎ ላይ ይሞላልዎታል!"
     ].join("\n");
 
     await sendMessage(chatId, msg, getVerifiedKeyboard(user));
     return;
   }
 
-  // 7. 📤 ወጪ ማድረግ
+  // 7. 📤 ወጪ ማድረግ (Locked to Phone)
   if (text === "/withdraw" || text.includes("withdraw") || text.includes("ወጪ")) {
     const balanceStr = (user.balance || 0).toFixed(2);
     const msg = [
       "📤 <b>ያሸነፉትን ገንዘብ ወጪ ማድረጊያ</b>",
       "",
-      "• <b>ያለዎት ቀሪ ሂሳብ:</b> " + balanceStr + " ETB",
+      "• <b>ዋና ሂሳብ (ሊወጣ የሚችል):</b> <b>" + balanceStr + " ETB</b>",
       "• <b>ዝቅተኛ የወጪ መጠን:</b> " + ADMIN_CONFIG.minWithdraw + " ETB",
-      "• <b>የሚከፈልበት ስልክ ቁጥር:</b> <code>" + user.phone + "</code> (Locked)",
+      "• <b>የሚከፈልበት ስልክ ቁጥር:</b> <code>" + user.phone + "</code> (የተቆለፈ)",
       "• <b>የክፍያ ጊዜ:</b> ከ 5 እስከ 15 ደቂቃዎች ውስጥ",
       "",
-      "🔒 <b>የደህንነት ህግ፦</b> ገንዘብ ወጪ የሚደረገው በተመዘገቡበት ስልክ ቁጥር (<code>" + user.phone + "</code>) ብቻ ነው!",
-      "ወጪ ለማድረግ የሚፈልጉትን የብር መጠን ለአድሚን <b>" + ADMIN_CONFIG.supportUsername + "</b> ይላኩ።"
+      "🔒 <b>ማሳሰቢያ፦</b> ወጪ የሚደረገው ከተጫወቱ በኋላ ያሸነፉት ወይም ያስገቡት <b>ዋና ሂሳብ</b> ብቻ ነው።",
+      "ወጪ ለማድረግ ለአድሚን <b>" + ADMIN_CONFIG.supportUsername + "</b> ይላኩ።"
     ].join("\n");
 
     const inlineWith = {
@@ -390,8 +410,8 @@ async function handleUpdate(update) {
       "",
       "• <b>ስም:</b> " + userName,
       "• <b>የቴሌግራም ID:</b> <code>" + userId + "</code>",
-      "• <b>የተረጋገጠ ስልክ:</b> <code>" + user.phone + "</code> ✅",
-      "• <b>የዋሌት ሁኔታ:</b> የተቆለፈ እና ደህንነቱ የተጠበቀ 🔒",
+      "• <b>ስልክ:</b> <code>" + user.phone + "</code> ✅",
+      "• <b>የይለፍ ቃል:</b> <code>" + (user.password || "******") + "</code>",
       "• <b>የአካውንት ደረጃ:</b> ቪአይፒ (VIP Player) ⭐"
     ].join("\n");
     await sendMessage(chatId, msg, getVerifiedKeyboard(user));
@@ -412,7 +432,7 @@ async function handleUpdate(update) {
 
     const inlineShare = {
       inline_keyboard: [
-        [{ text: "📤 ሊንኩን ለጓደኛ አጋራ (Share)", url: "https://t.me/share/url?url=" + encodeURIComponent(refLink) + "&text=" + encodeURIComponent("🔥 ና እዚህ ፈጣን የቀጥታ ካርቴላ ቢንጎ እንጫወት!") }],
+        [{ text: "📤 ሊንኩን ለጓደኛ አጋራ (Share)", url: "https://t.me/share/url?url=" + encodeURIComponent(refLink) + "&text=" + encodeURIComponent("🔥 ና እዚህ ፈጣን የቀጥታ ካርቴላ ቢንጎ እንጫወት! 15 ETB መጫወቻ ቦነስ ተቀበል!") }],
       ],
     };
 
@@ -425,7 +445,7 @@ async function handleUpdate(update) {
     const msg = [
       "📖 <b>የካርቴላ ቢንጎ አጨዋወት መመሪያ</b>",
       "",
-      "1. <b>ካርቴላ ይምረጡ፦</b> ጨዋታው ከመጀመሩ በፊት የሚፈልጉትን ካርቴላ ይግዙ።",
+      "1. <b>ካርቴላ ይምረጡ፦</b> ከመጫወቻ ሂሳብዎ ወይም ከዋና ሂሳብዎ ካርቴላ ይግዙ።",
       "2. <b>ቁጥሮችን ይከታተሉ፦</b> የሚወጡትን እጣ ቁጥሮች በካርቴላዎ ላይ ያመሳክሩ።",
       "3. <b>ቢንጎ ይበሉ፦</b> መስመር ሲሞላ «BINGO» የሚለውን ተጭነው ያሸንፉ!"
     ].join("\n");
@@ -471,9 +491,8 @@ async function handleUpdate(update) {
 
 let offset = 0;
 async function pollUpdates() {
-  console.log("🚀 Phoenix Bingo Bot is starting polling with STRICT verification gate...");
+  console.log("🚀 Phoenix Bingo Bot: Single Poller Active with 15 ETB Bonus!");
   await getDatabase();
-  console.log("✅ Polling loop active. Listening for updates!");
 
   while (true) {
     try {
