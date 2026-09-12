@@ -21,12 +21,12 @@ export function TicketGrid({
   }, [total]);
 
   return (
-    <div className="w-full px-2 sm:px-3 pt-2">
-      {/* Full Page Ticket Grid (All 1 - 550 numbers) */}
-      <div className="w-full rounded-2xl border border-border/80 bg-black/50 p-2 sm:p-3 shadow-2xl">
+    <div className="w-full px-1.5 sm:px-3 pt-2">
+      {/* 12 columns across on mobile, compact and finger-friendly */}
+      <div className="w-full rounded-2xl border border-border/80 bg-black/60 p-1.5 sm:p-2.5 shadow-2xl">
         <div
           className={cn(
-            "grid grid-cols-7 xs:grid-cols-8 sm:grid-cols-10 md:grid-cols-11 lg:grid-cols-12 gap-1.5 sm:gap-2",
+            "grid grid-cols-12 sm:grid-cols-14 md:grid-cols-16 lg:grid-cols-20 gap-1 sm:gap-1.5",
             disabled && "opacity-60 pointer-events-none"
           )}
         >
@@ -40,18 +40,19 @@ export function TicketGrid({
                 type="button"
                 disabled={disabled || isTaken}
                 onClick={() => onToggle(n)}
+                aria-label={`ካርቴላ ${n}`}
                 className={cn(
-                  "relative flex aspect-square flex-col items-center justify-center rounded-xl border text-xs sm:text-sm font-black tabular-nums transition-all active:scale-90 select-none",
+                  "relative flex aspect-square flex-col items-center justify-center rounded-lg border text-[10px] sm:text-xs font-black tabular-nums transition-transform active:scale-85 select-none touch-manipulation",
                   isTaken || disabled
                     ? "border-transparent bg-secondary/15 text-muted-foreground/30 line-through cursor-not-allowed"
                     : isSelected
                     ? "border-gold bg-gradient-to-br from-amber-400 via-gold to-amber-500 text-black shadow-glow-gold font-black scale-105 z-10 ring-2 ring-gold/70"
-                    : "border-border/70 bg-secondary/80 text-foreground hover:border-gold/50 hover:bg-secondary active:border-gold"
+                    : "border-border/60 bg-secondary/80 text-foreground hover:border-gold/50 hover:bg-secondary active:border-gold"
                 )}
               >
                 <span>{n}</span>
                 {isSelected && (
-                  <CheckCircle2 className="absolute top-0.5 right-0.5 h-3 w-3 text-black stroke-[3]" />
+                  <CheckCircle2 className="absolute -top-1 -right-1 h-3 w-3 text-emerald-400 fill-black stroke-[3] rounded-full" />
                 )}
               </button>
             );
