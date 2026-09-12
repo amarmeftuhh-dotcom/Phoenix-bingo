@@ -7,7 +7,7 @@ import { getStoredBotSettings } from "./botConfig";
  * 1. 100% Real-time synchronization across all devices & players
  * 2. Automatic server-time calibration to eliminate phone clock differences
  * 3. Exact state persistence across page reloads/refreshes - no resetting or jumping
- * 4. Structured cycle: Lobby (35s) -> Dynamic Ball Calling (50s) -> Victory (3s) -> Next Round
+ * 4. Structured cycle: Lobby (45s) -> Dynamic Ball Calling (50s) -> Victory (3s) -> Next Round
  * 5. Dynamic Bot integration:
  *    - If bots are OFF: 0 bot tickets!
  *    - If NO ONE took any cartelas: NO BALLS CALLED! Round resets/waits ("hulum sew kalyeza mnm sayitara yalfal").
@@ -15,10 +15,10 @@ import { getStoredBotSettings } from "./botConfig";
  *    - No phantom 700/800 ETB jackpot! Jackpot is strictly: total tickets * 10 ETB.
  */
 
-export const LOBBY_MS = 35_000;         // 35 seconds betting/cartela selection
+export const LOBBY_MS = 45_000;         // 45 seconds betting/cartela selection (Standard Ethiopian Live Bingo)
 export const CALLING_MS = 50_000;       // 50 seconds ball calling (20 balls @ 2.5s)
 export const VICTORY_MS = 3_000;        // Exactly 3 seconds winner celebration
-export const ROUND_DURATION_MS = LOBBY_MS + CALLING_MS + VICTORY_MS; // Exactly 88,000 ms per round
+export const ROUND_DURATION_MS = LOBBY_MS + CALLING_MS + VICTORY_MS; // Exactly 98,000 ms per round
 export const BALL_INTERVAL_MS = 2_500;  // 2.5 seconds between balls
 
 // Dynamic winning ball target per round (between 17 and 20 balls)
