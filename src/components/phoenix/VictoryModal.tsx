@@ -22,7 +22,7 @@ export function VictoryModal({
   onNextRound: () => void;
 }) {
   const { t } = useLang();
-  const [secondsLeft, setSecondsLeft] = useState(4);
+  const [secondsLeft, setSecondsLeft] = useState(3);
 
   const winner = winners[0];
   const isUserWinner = winner?.isUser ?? false;
@@ -43,7 +43,7 @@ export function VictoryModal({
 
   useEffect(() => {
     if (!open) {
-      setSecondsLeft(4);
+      setSecondsLeft(3);
       return;
     }
 
@@ -59,7 +59,7 @@ export function VictoryModal({
 
     const timer = setTimeout(() => {
       onNextRound();
-    }, 3800);
+    }, 3000);
 
     return () => {
       clearInterval(interval);
@@ -105,8 +105,8 @@ export function VictoryModal({
           🎉 {isUserWinner ? "እንኳን ደስ አለዎት! (CONGRATULATIONS!)" : "አሸናፊ ተለይቷል! (WINNER ANNOUNCED!)"}
         </p>
 
-        <h3 className="mt-1 text-2xl font-black text-foreground">
-          {isUserWinner ? "ቢንጎ መትተዋል!" : "ቢንጎ ተመቷል!"}
+        <h3 className="mt-1 text-3xl font-black text-gold tracking-wider">
+          ቢንጎ!
         </h3>
 
         <div className="mt-4 rounded-2xl border border-gold/40 bg-gold/10 p-3.5 shadow-inner">
@@ -155,12 +155,12 @@ export function VictoryModal({
           ))}
         </div>
 
-        {/* Automatic Progress Bar & Auto-transition indicator */}
-        <div className="mt-5 flex flex-col items-center gap-2 rounded-2xl border border-emerald-500/30 bg-emerald-500/10 p-3">
+        {/* Automatic Progress Bar & Auto-transition indicator (3s) */}
+        <div className="mt-4 flex flex-col items-center gap-2 rounded-2xl border border-emerald-500/30 bg-emerald-500/10 p-2.5">
           <div className="flex items-center justify-between w-full text-xs font-black text-emerald-400">
             <span className="flex items-center gap-1.5">
               <Clock className="h-3.5 w-3.5 animate-spin" />
-              በራስ-ሰር ወደ ቀጣይ ዙር በመመለስ ላይ...
+              ወደ ቀጣይ ዙር በመመለስ ላይ...
             </span>
             <span className="tabular-nums font-black">{secondsLeft}s</span>
           </div>
@@ -168,7 +168,7 @@ export function VictoryModal({
           <div className="h-1.5 w-full overflow-hidden rounded-full bg-black/40">
             <div
               className="h-full bg-gradient-to-r from-emerald-400 via-gold to-emerald-400 transition-all duration-1000 ease-linear rounded-full"
-              style={{ width: `${Math.max(0, (secondsLeft / 4) * 100)}%` }}
+              style={{ width: `${Math.max(0, (secondsLeft / 3) * 100)}%` }}
             />
           </div>
         </div>
