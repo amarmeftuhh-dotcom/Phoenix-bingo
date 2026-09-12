@@ -2,54 +2,67 @@
  * Phoenix Bingo - Universal Live Room Synchronization Engine
  * 
  * Guarantees:
- * 1. 100% Real-time synchronization across all players (universal epoch clock)
- * 2. Deterministic 75-ball call sequence per round ID (all players hear/see same balls at same second)
- * 3. Persistence across page reloads/refreshes - game state & player tickets are never lost
- * 4. Automatic transition: Lobby (40s) -> Live Call (60s) -> Victory (10s) -> Next Round
+ * 1. 100% Real-time synchronization across all devices & players
+ * 2. Automatic server-time calibration to eliminate phone clock differences
+ * 3. Exact state persistence across page reloads/refreshes - no resetting or jumping
+ * 4. Structured cycle: Lobby (35s) -> Dynamic Ball Calling (50s) -> Victory (3s) -> Next Round
  */
 
-export const LOBBY_MS = 35_000;         // 35 seconds betting/selection
-export const VICTORY_MS = 3_000;        // Exactly 3 seconds winner celebration (User specified)
-export const BALL_INTERVAL_MS = 2_600;  // 2.6 seconds between balls
+export const LOBBY_MS = 35_000;         // 35 seconds betting/cartela selection
+export const CALLING_MS = 50_000;       // 50 seconds ball calling (20 balls @ 2.5s)
+export const VICTORY_MS = 3_000;        // Exactly 3 seconds winner celebration
+export const ROUND_DURATION_MS = LOBBY_MS + CALLING_MS + VICTORY_MS; // Exactly 88,000 ms per round
+export const BALL_INTERVAL_MS = 2_500;  // 2.5 seconds between balls
 
-// Unpredictable winning ball target per round (between 17 and 22 balls)
+// Dynamic winning ball target per round (between 17 and 20 balls)
 export function getWinningBallTarget(roundId: number): number {
-  const variations = [17, 21, 18, 22, 19, 20];
-  return variations[Math.abs(roundId) % variations.length]!;
+  const targets = [18, 20, 17, 19, 18, 20];
+  return targets[Math.abs(roundId) % targets.length]!;
 }
 
-// 6-round periodic cycle total: 532,200 ms (~8.8 minutes)
-const CYCLE_MS = 532_200;
-const EPOCH_ANCHOR = 1740000000000; // Fixed universal reference epoch
+// Server Time Calibration (Aligns all player phones to atomic server time)
+let serverTimeOffset = 0;
+let hasAttemptedSync = false;
 
-export function getCurrentRoundInfo(now: number = Date.now()) {
-  const elapsedTotal = Math.max(0, now - EPOCH_ANCHOR);
-  const cycleIndex = Math.floor(elapsedTotal / CYCLE_MS);
-  let cycleOffset = elapsedTotal % CYCLE_MS;
-  
-  let roundInCycle = 0;
-  let elapsedInRound = cycleOffset;
-  let winningBallCount = 17;
-  let callingMs = 17 * BALL_INTERVAL_MS;
-  let roundTotalMs = LOBBY_MS + callingMs + VICTORY_MS;
-
-  for (let i = 0; i < 6; i++) {
-    const w = getWinningBallTarget(i);
-    const cMs = w * BALL_INTERVAL_MS;
-    const rMs = LOBBY_MS + cMs + VICTORY_MS;
-    if (cycleOffset < rMs) {
-      roundInCycle = i;
-      elapsedInRound = cycleOffset;
-      winningBallCount = w;
-      callingMs = cMs;
-      roundTotalMs = rMs;
-      break;
+export async function syncServerClock() {
+  if (typeof window === "undefined" || hasAttemptedSync) return;
+  hasAttemptedSync = true;
+  try {
+    const start = Date.now();
+    const res = await fetch(window.location.origin + "/", { method: "HEAD", cache: "no-store" });
+    const dateHeader = res.headers.get("Date");
+    if (dateHeader) {
+      const end = Date.now();
+      const rtt = end - start;
+      const serverTime = new Date(dateHeader).getTime() + Math.floor(rtt / 2);
+      serverTimeOffset = serverTime - end;
     }
-    cycleOffset -= rMs;
+  } catch {
+    // Fallback gracefully to local clock
   }
+}
 
-  const roundId = cycleIndex * 6 + roundInCycle;
-  return { roundId, elapsedInRound, winningBallCount, callingMs, roundTotalMs };
+// Automatically initiate calibration on module load in browser
+if (typeof window !== "undefined") {
+  syncServerClock();
+}
+
+export function getSynchronizedNow(): number {
+  return Date.now() + serverTimeOffset;
+}
+
+export function getCurrentRoundInfo(now: number = getSynchronizedNow()) {
+  const roundId = Math.floor(now / ROUND_DURATION_MS);
+  const elapsedInRound = now % ROUND_DURATION_MS;
+  const winningBallCount = getWinningBallTarget(roundId);
+  const callingMs = winningBallCount * BALL_INTERVAL_MS;
+
+  return {
+    roundId,
+    elapsedInRound,
+    winningBallCount,
+    callingMs,
+  };
 }
 
 // Common Ethiopian bot player names for live room immersion
@@ -139,7 +152,7 @@ export function getDeterministicRoomData(roundId: number, winningBallCount: numb
  * Computes the exact live state of the round based on universal epoch time
  */
 export function getLiveRoundSnapshot(userTickets: number[] = []): LiveRoundSnapshot {
-  const now = Date.now();
+  const now = getSynchronizedNow();
   const { roundId, elapsedInRound, winningBallCount, callingMs } = getCurrentRoundInfo(now);
 
   const roomData = getDeterministicRoomData(roundId, winningBallCount);
@@ -159,7 +172,7 @@ export function getLiveRoundSnapshot(userTickets: number[] = []): LiveRoundSnaps
     drawnBalls = [];
     currentBall = null;
   } else if (elapsedInRound < LOBBY_MS + callingMs) {
-    // 2. Live Calling Phase (Ends immediately when winningBallCount is hit - NO FORCED 60s!)
+    // 2. Live Calling Phase (Unpredictable finish at winningBallCount)
     const gameElapsed = elapsedInRound - LOBBY_MS;
     const count = Math.min(
       winningBallCount,
@@ -169,7 +182,6 @@ export function getLiveRoundSnapshot(userTickets: number[] = []): LiveRoundSnaps
     phase = "game";
     isGameStarted = true;
     countdown = 0;
-    // Newest drawn ball at index 0
     const slice = fullBallsSequence.slice(0, count);
     drawnBalls = [...slice].reverse();
     currentBall = drawnBalls[0] || null;
