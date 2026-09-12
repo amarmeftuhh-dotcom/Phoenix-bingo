@@ -124,6 +124,10 @@ export function getStoredPlayer(): PlayerProfile {
       if (typeof baseProfile.playWallet !== "number" || isNaN(baseProfile.playWallet)) {
         baseProfile.playWallet = 15.0; // 15 ETB Play Bonus
       }
+      // If balance is 0 and player hasn't played or deposited, automatically grant 15 ETB welcome play wallet
+      if (baseProfile.playWallet <= 0 && baseProfile.mainWallet <= 0 && (!baseProfile.gamesPlayed || baseProfile.gamesPlayed === 0)) {
+        baseProfile.playWallet = 15.0;
+      }
     } else {
       // Start completely FRESH with 15.00 ETB Play Bonus and 0.00 ETB Main Wallet
       baseProfile = {
@@ -206,10 +210,28 @@ export function getStoredPlayer(): PlayerProfile {
 
 export function getStoredWalletBalances(): { mainWallet: number; playWallet: number } {
   const player = getStoredPlayer();
+  let main = typeof player.mainWallet === "number" && !isNaN(player.mainWallet) ? player.mainWallet : 0.0;
+  let play = typeof player.playWallet === "number" && !isNaN(player.playWallet) ? player.playWallet : 15.0;
+
+  // If a player has 0 play balance and 0 main balance with 0 games played, ensure they receive the 15 ETB welcome play wallet
+  if (play <= 0 && main <= 0 && (!player.gamesPlayed || player.gamesPlayed === 0)) {
+    play = 15.0;
+    player.playWallet = 15.0;
+    saveStoredPlayer(player);
+  }
+
   return {
-    mainWallet: typeof player.mainWallet === "number" && !isNaN(player.mainWallet) ? player.mainWallet : 0.0,
-    playWallet: typeof player.playWallet === "number" && !isNaN(player.playWallet) ? player.playWallet : 15.0,
+    mainWallet: main,
+    playWallet: play,
   };
+}
+
+export function claimWelcomePlayBonus(amount: number = 15.0): number {
+  const player = getStoredPlayer();
+  player.playWallet = (player.playWallet || 0) + amount;
+  saveStoredPlayer(player);
+  saveStoredWalletBalances(player.mainWallet, player.playWallet);
+  return player.playWallet;
 }
 
 export function saveStoredWalletBalances(mainWallet: number, playWallet: number) {
