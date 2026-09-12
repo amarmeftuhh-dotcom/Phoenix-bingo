@@ -31,6 +31,12 @@ import {
   saveStoredWalletBalances,
   claimWelcomePlayBonus,
 } from "@/lib/platformStore";
+import {
+  getLiveRoundSnapshot,
+  saveUserRoundTickets,
+  getUserRoundTickets,
+  clearOldRoundTickets,
+} from "@/lib/liveSyncEngine";
 
 const TOTAL_TICKETS = 550;
 const STAKE_PER_TICKET = 10;
@@ -46,18 +52,35 @@ const BOT_NAMES = [
 ];
 
 export function App() {
+  // Synchronized Live Room initial snapshot
+  const initialSnap = getLiveRoundSnapshot();
+  const [currentRoundId, setCurrentRoundId] = useState<number>(initialSnap.roundId);
+
+  // Restore saved tickets for this round from localStorage
+  const savedTickets = getUserRoundTickets(initialSnap.roundId);
+
   const [activeTab, setActiveTab] = useState<NavTab>(() => {
     if (typeof window !== "undefined") {
       const hash = window.location.hash.replace("#", "").split("?")[0].toLowerCase();
-      if (["home", "wallet", "rules", "history", "profile", "admin", "finance", "rank"].includes(hash)) {
+      if (["wallet", "rules", "history", "profile", "admin", "finance", "rank"].includes(hash)) {
         return hash as NavTab;
       }
     }
+    if (initialSnap.isGameStarted && savedTickets.length > 0) {
+      return "game";
+    }
     return "home";
   });
-  const [pendingTickets, setPendingTickets] = useState<number[]>([]);
-  const [confirmedTickets, setConfirmedTickets] = useState<number[]>([]);
-  const [takenTickets, setTakenTickets] = useState<number[]>([]);
+
+  // If in lobby phase, restored tickets belong in pendingTickets so player sees their chosen cartelas!
+  // If in game phase, restored tickets belong in confirmedTickets so player is in the active game.
+  const [pendingTickets, setPendingTickets] = useState<number[]>(() => {
+    return initialSnap.phase === "lobby" ? savedTickets : [];
+  });
+  const [confirmedTickets, setConfirmedTickets] = useState<number[]>(() => {
+    return initialSnap.phase !== "lobby" ? savedTickets : [];
+  });
+  const [takenTickets, setTakenTickets] = useState<number[]>(initialSnap.takenTickets);
   const [mainWallet, setMainWallet] = useState<number>(() => getStoredWalletBalances().mainWallet);
   const [playWallet, setPlayWallet] = useState<number>(() => getStoredWalletBalances().playWallet);
 
@@ -90,20 +113,17 @@ export function App() {
   const [promoCodeInput, setPromoCodeInput] = useState("");
   const [promoToast, setPromoToast] = useState<string | null>(null);
 
-  // Continuous Global Game Engine (Persists across tab navigation)
-  const [globalCountdown, setGlobalCountdown] = useState(45);
-  const [isGameStarted, setIsGameStarted] = useState(false);
-  const [drawn, setDrawn] = useState<number[]>([]);
-  const [won, setWon] = useState(false);
+  // Continuous Global Synchronized Live Game Engine (Identical across all devices)
+  const [globalCountdown, setGlobalCountdown] = useState<number>(initialSnap.countdown);
+  const [isGameStarted, setIsGameStarted] = useState<boolean>(initialSnap.isGameStarted);
+  const [drawn, setDrawn] = useState<number[]>(initialSnap.drawnBalls);
+  const [won, setWon] = useState<boolean>(initialSnap.phase === "victory");
   const [winners, setWinners] = useState<Winner[]>([]);
   const [ticketsData, setTicketsData] = useState<Record<number, Cell[]>>({});
+  const [liveJackpot, setLiveJackpot] = useState<number>(initialSnap.jackpot);
+  const [totalRoomTickets, setTotalRoomTickets] = useState<number>(initialSnap.totalRoomTickets);
 
   const activeTickets = Array.from(new Set([...confirmedTickets, ...pendingTickets]));
-
-  // REAL LIVE DYNAMIC JACKPOT CALCULATION:
-  const userTicketsCount = isGameStarted ? confirmedTickets.length : pendingTickets.length;
-  const totalRoomTickets = takenTickets.length + userTicketsCount;
-  const liveJackpot = totalRoomTickets * STAKE_PER_TICKET;
 
   const totalRoomTicketsRef = useRef(totalRoomTickets);
   useEffect(() => {
@@ -216,124 +236,75 @@ export function App() {
     };
   }, [activeTickets]);
 
-  // Target ball count for this round before a room player hits Bingo
-  const targetWinningDrawRef = useRef<number>(22);
-  const targetWinnerTypeRef = useRef<"user" | "bot">("bot");
-  const roomWinnerBotRef = useRef<{ name: string; phone: string; ticket: number }>({
-    name: "አበበ ተፈራ",
-    phone: "0911***45",
-    ticket: 214,
-  });
+  // Synchronized ball caller reference to prevent sound spam on reload
+  const lastDrawnCountRef = useRef<number>(initialSnap.drawnBalls.length);
 
-  // 1. Live Room simulation: Bots and players actively buy/hold cartelas during countdown
+  // 1. Synchronized Universal Game Room Loop (500ms precision sync)
   useEffect(() => {
-    if (isGameStarted) return;
+    const syncInterval = setInterval(() => {
+      const activeUserTickets = Array.from(new Set([...confirmedTickets, ...pendingTickets]));
+      const snap = getLiveRoundSnapshot(activeUserTickets);
 
-    const interval = setInterval(() => {
-      if (!botSettings.isBotSystemActive) return;
-
-      setTakenTickets((prev) => {
-        if (prev.length >= 480) return prev;
-        const additionsCount = Math.random() > 0.35 ? (Math.random() > 0.6 ? 3 : 1) : 0;
-        if (additionsCount === 0) return prev;
-
-        const next = [...prev];
-        for (let i = 0; i < additionsCount; i++) {
-          const candidate = Math.floor(Math.random() * TOTAL_TICKETS) + 1;
-          if (!next.includes(candidate) && !pendingTickets.includes(candidate)) {
-            next.push(candidate);
-          }
-        }
-        return next;
-      });
-    }, 1400);
-
-    return () => clearInterval(interval);
-  }, [isGameStarted, pendingTickets, botSettings.isBotSystemActive]);
-
-  // 2. Unified 45s countdown timer across all pages
-  useEffect(() => {
-    if (isGameStarted) return;
-
-    const timer = setInterval(() => {
-      setGlobalCountdown((prev) => {
-        if (prev <= 1) {
-          // If no player and no bot has chosen any cartela, keep waiting
-          if (totalRoomTicketsRef.current <= 0) {
-            return 45;
-          }
-
-          // Real player or bot exists -> Start round & switch to tickets view
-          setIsGameStarted(true);
-          setActiveTab("game");
-          try {
-            window.location.hash = "game";
-          } catch {}
-          return 0;
-        }
-        return prev - 1;
-      });
-    }, 1000);
-
-    return () => clearInterval(timer);
-  }, [isGameStarted]);
-
-  // When round starts, setup target winning draw count + bot winner + apply Admin Force Win Mode
-  useEffect(() => {
-    if (isGameStarted) {
-      const mode = botSettings.botWinnerForce;
-      const userHasTickets = activeTickets.length > 0;
-
-      let willUserWin = false;
-
-      if (!userHasTickets) {
-        willUserWin = false;
-      } else if (!botSettings.isBotSystemActive) {
-        willUserWin = true;
-      } else if (mode === "real") {
-        willUserWin = true;
-      } else if (mode === "bots") {
-        willUserWin = false;
-      } else if (mode === "mix") {
-        willUserWin = Math.random() < 0.5;
-      } else if (mode === "mix_real") {
-        willUserWin = Math.random() < 0.75;
-      } else if (mode === "mix_dep") {
-        willUserWin = Math.random() < 0.65;
-      } else {
-        const winProbability = Math.min(0.8, 0.25 + activeTickets.length * 0.15);
-        willUserWin = Math.random() < winProbability;
+      // A. New Round Rollover (Epoch boundary reached)
+      if (snap.roundId !== currentRoundId) {
+        setCurrentRoundId(snap.roundId);
+        setConfirmedTickets([]);
+        setPendingTickets([]);
+        setWon(false);
+        setWinners([]);
+        setIsGameStarted(false);
+        setDrawn([]);
+        setGlobalCountdown(snap.countdown);
+        setTakenTickets(snap.takenTickets);
+        setLiveJackpot(snap.jackpot);
+        setTotalRoomTickets(snap.totalRoomTickets);
+        lastDrawnCountRef.current = 0;
+        clearOldRoundTickets(snap.roundId);
+        return;
       }
 
-      targetWinnerTypeRef.current = willUserWin ? "user" : "bot";
+      // B. Sync Live Room Meta & Timer
+      setGlobalCountdown(snap.countdown);
+      setTakenTickets(snap.takenTickets);
+      setLiveJackpot(snap.jackpot);
+      setTotalRoomTickets(snap.totalRoomTickets);
 
-      targetWinningDrawRef.current = willUserWin
-        ? Math.floor(Math.random() * 8) + 18
-        : Math.floor(Math.random() * 12) + 16;
+      // C. Sync Phases
+      if (snap.phase === "lobby") {
+        setIsGameStarted(false);
+        setWon(false);
+        setDrawn([]);
+      } else if (snap.phase === "game") {
+        setIsGameStarted(true);
 
-      const randomName = BOT_NAMES[Math.floor(Math.random() * BOT_NAMES.length)] || "አበበ ተፈራ";
-      const randomPhone = `09${Math.floor(10 + Math.random() * 80)}***${Math.floor(10 + Math.random() * 89)}`;
-      let randomTicket = Math.floor(Math.random() * 500) + 1;
-      while (activeTickets.includes(randomTicket)) {
-        randomTicket = Math.floor(Math.random() * 500) + 1;
+        // Auto-confirm pending tickets when round starts
+        if (pendingTickets.length > 0) {
+          const allConfirmed = Array.from(new Set([...confirmedTickets, ...pendingTickets]));
+          setConfirmedTickets(allConfirmed);
+          setPendingTickets([]);
+          saveUserRoundTickets(snap.roundId, allConfirmed);
+        }
+
+        // Live voice call when a new ball drops
+        if (snap.drawnBalls.length > lastDrawnCountRef.current) {
+          const newBall = snap.drawnBalls[0];
+          if (newBall) {
+            buzz(12);
+            playNumberCallVoice(newBall);
+          }
+          lastDrawnCountRef.current = snap.drawnBalls.length;
+        }
+        setDrawn(snap.drawnBalls);
+      } else if (snap.phase === "victory") {
+        setIsGameStarted(true);
+        setDrawn(snap.drawnBalls);
       }
-      roomWinnerBotRef.current = {
-        name: randomName,
-        phone: randomPhone,
-        ticket: randomTicket,
-      };
-    }
-  }, [isGameStarted, botSettings, activeTickets.length]);
+    }, 500);
 
-  // Automatically confirm pending cartelas when game starts
-  useEffect(() => {
-    if (isGameStarted && pendingTickets.length > 0) {
-      setConfirmedTickets((prev) => Array.from(new Set([...prev, ...pendingTickets])));
-      setPendingTickets([]);
-    }
-  }, [isGameStarted, pendingTickets]);
+    return () => clearInterval(syncInterval);
+  }, [currentRoundId, confirmedTickets, pendingTickets]);
 
-  // 3. Initialize ticket boards whenever active tickets change
+  // 2. Initialize ticket boards whenever active tickets change
   useEffect(() => {
     setTicketsData((prev) => {
       const next = { ...prev };
@@ -348,26 +319,7 @@ export function App() {
     });
   }, [activeTickets]);
 
-  // 4. Continuous Ball Caller when round is active
-  useEffect(() => {
-    if (!isGameStarted || won) return;
-
-    const id = setInterval(() => {
-      setDrawn((prev) => {
-        if (prev.length >= MAX_NUMBER) return prev;
-        const newBall = randomDraw(prev);
-        if (newBall) {
-          buzz(12);
-          playNumberCallVoice(newBall);
-        }
-        return [newBall, ...prev];
-      });
-    }, 2800);
-
-    return () => clearInterval(id);
-  }, [isGameStarted, won]);
-
-  // 5. Automatic Bingo & Winner Evaluation on every drawn ball
+  // 3. Automatic Bingo & Winner Evaluation
   useEffect(() => {
     if (!isGameStarted || won || drawn.length === 0) return;
 
@@ -385,31 +337,36 @@ export function App() {
       }));
 
       if (checkBingo(evaluatedCells)) {
-        buzz([20, 50, 20, 50, 40]);
-        setMainWallet((prev) => prev + liveJackpot);
-        const player = getStoredPlayer();
-        player.totalWon = (player.totalWon || 0) + liveJackpot;
-        player.gamesPlayed = (player.gamesPlayed || 0) + 1;
-        saveStoredPlayer(player);
-        setWinners([
-          {
-            name: `${player.name} (እርስዎ)`,
-            phone: player.phone ? player.phone.slice(0, 4) + "***" + player.phone.slice(-2) : "09***38",
-            ticket: num,
-            amount: liveJackpot,
-            isUser: true,
-          },
-        ]);
-        playBingoFanfare();
-        setWon(true);
+        const payoutKey = `phoenix_payout_claimed_round_${currentRoundId}`;
+        if (!localStorage.getItem(payoutKey)) {
+          localStorage.setItem(payoutKey, "true");
+          buzz([20, 50, 20, 50, 40]);
+          setMainWallet((prev) => prev + liveJackpot);
+          const player = getStoredPlayer();
+          player.totalWon = (player.totalWon || 0) + liveJackpot;
+          player.gamesPlayed = (player.gamesPlayed || 0) + 1;
+          saveStoredPlayer(player);
+          setWinners([
+            {
+              name: `${player.name} (እርስዎ)`,
+              phone: player.phone ? player.phone.slice(0, 4) + "***" + player.phone.slice(-2) : "09***38",
+              ticket: num,
+              amount: liveJackpot,
+              isUser: true,
+            },
+          ]);
+          playBingoFanfare();
+          setWon(true);
+        }
         return;
       }
     }
 
-    // Check if room/bot won (Only if bots/other players actually took tickets)
-    if (takenTickets.length > 0 && drawn.length >= targetWinningDrawRef.current) {
+    // Room Winner Bot when victory phase is reached
+    const snap = getLiveRoundSnapshot();
+    if (snap.phase === "victory" && !won) {
       buzz([15, 40, 20]);
-      const bot = roomWinnerBotRef.current;
+      const bot = snap.winnerInfo;
       setWinners([
         {
           name: bot.name,
@@ -422,7 +379,7 @@ export function App() {
       playBingoFanfare();
       setWon(true);
     }
-  }, [drawn, ticketsData, activeTickets, won, isGameStarted, liveJackpot, takenTickets.length]);
+  }, [drawn, ticketsData, activeTickets, won, isGameStarted, liveJackpot, currentRoundId]);
 
   const toggleCell = (ticketNum: number, cellId: string) => {
     setTicketsData((prev) => {
@@ -441,20 +398,13 @@ export function App() {
 
   const handleNextRound = useCallback(() => {
     setWon(false);
-    setDrawn([]);
-    setIsGameStarted(false);
-    setGlobalCountdown(45);
-    setConfirmedTickets([]);
-    setPendingTickets([]);
-    setTakenTickets([]);
     setActiveTab("home");
+    try {
+      window.location.hash = "home";
+    } catch {}
   }, []);
 
   const handleManualStart = () => {
-    if (totalRoomTicketsRef.current <= 0) {
-      alert("እባክዎ መጀመሪያ ካርቴላ ይምረጡ ወይም ቦት ያስገቡ!");
-      return;
-    }
     setIsGameStarted(true);
     setActiveTab("game");
     try {
@@ -462,14 +412,16 @@ export function App() {
     } catch {}
   };
 
-  // Optimistic Cartela Selection / Refund Handler
+  // Optimistic Cartela Selection / Refund Handler with localStorage persistence
   const handleToggleTicket = (ticketNum: number) => {
     if (isGameStarted) return;
     buzz(10);
 
     // If already selected: Refund 10 ETB back to Play Wallet
     if (pendingTickets.includes(ticketNum)) {
-      setPendingTickets((prev) => prev.filter((x) => x !== ticketNum));
+      const nextPending = pendingTickets.filter((x) => x !== ticketNum);
+      setPendingTickets(nextPending);
+      saveUserRoundTickets(currentRoundId, nextPending);
       setPlayWallet((prev) => prev + STAKE_PER_TICKET);
       return;
     }
@@ -503,7 +455,9 @@ export function App() {
       setMainWallet((prev) => Math.max(0, prev - remainder));
     }
 
-    setPendingTickets((prev) => [...prev, ticketNum]);
+    const nextPending = [...pendingTickets, ticketNum];
+    setPendingTickets(nextPending);
+    saveUserRoundTickets(currentRoundId, nextPending);
   };
 
   // Claim Floating Bonus
@@ -629,6 +583,7 @@ export function App() {
             onNextRound={handleNextRound}
             prize={liveJackpot}
             totalRoomTickets={totalRoomTickets}
+            roundId={currentRoundId}
           />
         </div>
 
