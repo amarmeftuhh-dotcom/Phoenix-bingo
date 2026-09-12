@@ -1,765 +1,592 @@
-import { useState, useEffect, useRef, useCallback } from "react";
-import { LanguageProvider } from "@/lib/i18n";
-import { BottomNav, type NavTab } from "@/components/phoenix/BottomNav";
-import { LobbyView } from "@/views/LobbyView";
-import { GameView } from "@/views/GameView";
-import { WalletView } from "@/views/WalletView";
-import { RankView } from "@/views/RankView";
-import { ProfileView } from "@/views/ProfileView";
-import { AdminView } from "@/views/AdminView";
-import { FinanceView } from "@/views/FinanceView";
-import { VictoryModal, type Winner } from "@/components/phoenix/VictoryModal";
-import {
-  generateBoardForTicket,
-  randomDraw,
-  checkBingo,
-  MAX_NUMBER,
-  buzz,
-  type Cell,
-} from "@/lib/bingo";
-import { playNumberCallVoice, playBingoFanfare } from "@/lib/sound";
-import { WifiOff, Sparkles, X, Check } from "lucide-react";
-import {
-  import {
-  getStoredPlayer,
-  saveStoredPlayer,
-  getStoredWalletBalances,
-  saveStoredWalletBalances,
-} from "@/lib/platformStore";
-  getStoredBotSettings,
-  getStoredBonusEnabled,
-  type BotSettings,
-  type BotWinnerForceMode,
-} from "@/lib/botConfig";
-
-const TOTAL_TICKETS = 550;
-const STAKE_PER_TICKET = 10;
-const MAX_SELECT = 4;
-
-const BOT_NAMES = [
-  "አበበ", "ጫላ", "አስቴር", "ሄኖክ", "ዳዊት", "ማክዳ", "ዮሴፍ", "ቃልኪዳን", "ሳሙኤል", "ቤዛዊት",
-  "አለሙ", "ተስፋዬ", "መሰረት", "ሀና", "ዮናስ", "ናትናኤል", "እየሩሳሌም", "ኤደን", "ቢኒያም", "ቴዎድሮስ",
-  "አብርሀም", "ሳራ", "አቤል", "ሚካኤል", "ዘላለም", "ፍሬዘር", "እንዳለ", "ብርሀኑ", "ጌታሁን", "መላኩ",
-  "አየለ", "በላይ", "ሀይሌ", "ታደሰ", "ታምራት", "አማኑኤል", "ሀብታሙ", "ደጀኔ", "አዳነ", "አሊ",
-  "ከድር", "ጀማል", "ፋጡማ", "አሚና", "ሰሚራ", "አስናቀች", "ፀሀይ", "ሮማን", "መቅደስ", "ትዕግስት",
-  "ሰለሞን", "ዳንኤል", "ኤርሚያስ", "በእምነት", "አሮን", "ናሆም", "ኪሩቤል", "ያብስራ", "በረከት", "ቸርነት"
-];
-
-export function App() {
-  const [activeTab, setActiveTab] = useState<NavTab>("home");
-  const [pendingTickets, setPendingTickets] = useState<number[]>([]);
-  const [confirmedTickets, setConfirmedTickets] = useState<number[]>([]);
-  const [takenTickets, setTakenTickets] = useState<number[]>([]); // Clean Real Game: Starts at 0
-  const [mainWallet, setMainWallet] = useState<number>(() => getStoredWalletBalances().mainWallet);
-  const [playWallet, setPlayWallet] = useState<number>(() => getStoredWalletBalances().playWallet);
-
-  // Sync balances persistently with localStorage & platform store
-  useEffect(() => {
-    saveStoredWalletBalances(mainWallet, playWallet);
-  }, [mainWallet, playWallet]);
-
-  // Real-time synchronization when platformStore or Telegram updates balances
-  useEffect(() => {
-    const handleWalletSync = () => {
-      const b = getStoredWalletBalances();
-      setMainWallet(b.mainWallet);
-      setPlayWallet(b.playWallet);
-    };
-    window.addEventListener("phoenix_wallet_updated", handleWalletSync);
-    window.addEventListener("phoenix_player_updated", handleWalletSync);
-    return () => {
-      window.removeEventListener("phoenix_wallet_updated", handleWalletSync);
-      window.removeEventListener("phoenix_player_updated", handleWalletSync);
-    };
-  }, []);
-  // Online / Offline monitor
-  const [isOffline, setIsOffline] = useState(false);
-
-  // Floating bonus (Controlled exclusively by Admin - default OFF) & Promo code modal
-  const [showPromoFloat, setShowPromoFloat] = useState<boolean>(getStoredBonusEnabled);
-  const [showPromoModal, setShowPromoModal] = useState(false);
-  const [promoCodeInput, setPromoCodeInput] = useState("");
-  const [promoToast, setPromoToast] = useState<string | null>(null);
-
-  // Continuous Global Game Engine (Persists across tab navigation)
-  const [globalCountdown, setGlobalCountdown] = useState(45);
-  const [isGameStarted, setIsGameStarted] = useState(false);
-  const [drawn, setDrawn] = useState<number[]>([]);
-  const [won, setWon] = useState(false);
-  const [winners, setWinners] = useState<Winner[]>([]);
-  const [ticketsData, setTicketsData] = useState<Record<number, Cell[]>>({});
-
-  const activeTickets = Array.from(new Set([...confirmedTickets, ...pendingTickets]));
-
-  // REAL LIVE DYNAMIC JACKPOT CALCULATION:
-  const userTicketsCount = isGameStarted ? confirmedTickets.length : pendingTickets.length;
-  const totalRoomTickets = takenTickets.length + userTicketsCount;
-  const liveJackpot = totalRoomTickets * STAKE_PER_TICKET;
-
-  const totalRoomTicketsRef = useRef(totalRoomTickets);
-  useEffect(() => {
-    totalRoomTicketsRef.current = totalRoomTickets;
-  }, [totalRoomTickets]);
-
-  // Announcement Text
-  const [announcementText, setAnnouncementText] = useState(
-    "⚡ Instant Telebirr, CBE & M-Pesa Payouts • የቀጥታ ጃክፖት ሽልማት ክፍያ Live"
-  );
-
-  // Online / Offline listener
-  useEffect(() => {
-    const handleOnline = () => setIsOffline(false);
-    const handleOffline = () => setIsOffline(true);
-    window.addEventListener("online", handleOnline);
-    window.addEventListener("offline", handleOffline);
-    return () => {
-      window.removeEventListener("online", handleOnline);
-      window.removeEventListener("offline", handleOffline);
-    };
-  }, []);
-
-  // Listen for dedicated standalone URLs (e.g. #admin, #finance, #amuka, /admin, /finance)
-  useEffect(() => {
-    const checkSpecialRoutes = () => {
-      const search = window.location.search.toLowerCase();
-      const hash = window.location.hash.toLowerCase();
-      const pathname = window.location.pathname.toLowerCase();
-
-      if (
-        search.includes("amuka-finance") ||
-        search.includes("finance") ||
-        hash.includes("amuka-finance") ||
-        hash.includes("finance") ||
-        pathname.includes("amuka-finance") ||
-        pathname.includes("finance")
-      ) {
-        setActiveTab("finance");
-      } else if (
-        search.includes("amuka") ||
-        search.includes("admin") ||
-        hash.includes("amuka") ||
-        hash.includes("admin") ||
-        pathname.includes("amuka") ||
-        pathname.includes("admin")
-      ) {
-        setActiveTab("admin");
-      } else if (hash.includes("game")) {
-        setActiveTab("game");
-      } else if (hash.includes("wallet")) {
-        setActiveTab("wallet");
-      } else if (hash.includes("rank")) {
-        setActiveTab("rank");
-      } else if (hash.includes("profile")) {
-        setActiveTab("profile");
-      } else if (hash === "" || hash === "#" || hash === "#home") {
-        setActiveTab("home");
-      }
-    };
-
-    checkSpecialRoutes();
-    window.addEventListener("hashchange", checkSpecialRoutes);
-    window.addEventListener("popstate", checkSpecialRoutes);
-    return () => {
-      window.removeEventListener("hashchange", checkSpecialRoutes);
-      window.removeEventListener("popstate", checkSpecialRoutes);
-    };
-  }, []);
-
-  // Dynamic Bot Settings synchronized with Admin Panel
-  const [botSettings, setBotSettings] = useState<BotSettings>(getStoredBotSettings);
-
-  useEffect(() => {
-    const handleSettingsUpdate = () => {
-      setBotSettings(getStoredBotSettings());
-    };
-    const handleBonusToggle = (e: any) => {
-      setShowPromoFloat(!!e.detail);
-    };
-    const handleAddBots = (e: any) => {
-      const count = Number(e.detail) || 5;
-      setTakenTickets((prev) => {
-        const pool = new Set(prev);
-        let attempts = 0;
-        while (pool.size < prev.length + count && attempts < count * 5) {
-          attempts++;
-          const cand = Math.floor(Math.random() * TOTAL_TICKETS) + 1;
-          if (!activeTickets.includes(cand)) {
-            pool.add(cand);
-          }
-        }
-        return Array.from(pool);
-      });
-    };
-    const handleClearBots = () => {
-      setTakenTickets([]);
-    };
-
-    window.addEventListener("phoenix_bot_settings_updated", handleSettingsUpdate);
-    window.addEventListener("phoenix_bonus_toggle_updated", handleBonusToggle as any);
-    window.addEventListener("phoenix_admin_add_bots", handleAddBots as any);
-    window.addEventListener("phoenix_admin_clear_bots", handleClearBots as any);
-
-    return () => {
-      window.removeEventListener("phoenix_bot_settings_updated", handleSettingsUpdate);
-      window.removeEventListener("phoenix_bonus_toggle_updated", handleBonusToggle as any);
-      window.removeEventListener("phoenix_admin_add_bots", handleAddBots as any);
-      window.removeEventListener("phoenix_admin_clear_bots", handleClearBots as any);
-    };
-  }, [activeTickets]);
-
-  // Target ball count for this round before a room player hits Bingo
-  const targetWinningDrawRef = useRef<number>(22);
-  const targetWinnerTypeRef = useRef<"user" | "bot">("bot");
-  const roomWinnerBotRef = useRef<{ name: string; phone: string; ticket: number }>({
-    name: "አበበ ተፈራ",
-    phone: "0911***45",
-    ticket: 214,
-  });
-
-  // 1. Live Room simulation: Bots and players actively buy/hold cartelas during countdown
-  useEffect(() => {
-    if (isGameStarted) return;
-
-    const interval = setInterval(() => {
-      if (!botSettings.isBotSystemActive) return;
-
-      setTakenTickets((prev) => {
-        if (prev.length >= 480) return prev;
-        const additionsCount = Math.random() > 0.35 ? (Math.random() > 0.6 ? 3 : 1) : 0;
-        if (additionsCount === 0) return prev;
-
-        const next = [...prev];
-        for (let i = 0; i < additionsCount; i++) {
-          const candidate = Math.floor(Math.random() * TOTAL_TICKETS) + 1;
-          if (!next.includes(candidate) && !pendingTickets.includes(candidate)) {
-            next.push(candidate);
-          }
-        }
-        return next;
-      });
-    }, 1400);
-
-    return () => clearInterval(interval);
-  }, [isGameStarted, pendingTickets, botSettings.isBotSystemActive]);
-
-  // 2. Unified 45s countdown timer across all pages
-  useEffect(() => {
-    if (isGameStarted) return;
-
-    const timer = setInterval(() => {
-      setGlobalCountdown((prev) => {
-        if (prev <= 1) {
-          // If no player and no bot has chosen any cartela, DO NOT call balls!
-          // Restart countdown from 45s and keep waiting for players
-          if (totalRoomTicketsRef.current <= 0) {
-            return 45;
-          }
-
-          // Real player or bot exists -> Start round & switch to tickets view
-          setIsGameStarted(true);
-          setActiveTab("game");
-          try {
-            window.location.hash = "game";
-          } catch {}
-          return 0;
-        }
-        return prev - 1;
-      });
-    }, 1000);
-
-    return () => clearInterval(timer);
-  }, [isGameStarted]);
-
-  // When round starts, setup target winning draw count + bot winner + apply Admin Force Win Mode
-  useEffect(() => {
-    if (isGameStarted) {
-      // Determine winner based on Admin Bot Control Mode:
-      // Modes: "bots" | "real" | "mix" | "mix_real" | "mix_dep" | "ai"
-      const mode = botSettings.botWinnerForce;
-      const userHasTickets = activeTickets.length > 0;
-
-      let willUserWin = false;
-
-      if (!userHasTickets) {
-        // If no real player is in the room, Bot 100% wins to keep the game exciting & alive
-        willUserWin = false;
-      } else if (!botSettings.isBotSystemActive) {
-        // If bot system is turned off by Admin, real user wins
-        willUserWin = true;
-      } else if (mode === "real") {
-        // 100% Real User Wins
-        willUserWin = true;
-      } else if (mode === "bots") {
-        // 100% Bot Wins
-        willUserWin = false;
-      } else if (mode === "mix") {
-        // 50/50 Balanced Mix between User and Bot
-        willUserWin = Math.random() < 0.5;
-      } else if (mode === "mix_real") {
-        // 75% Real / 25% Bot Mix
-        willUserWin = Math.random() < 0.75;
-      } else if (mode === "mix_dep") {
-        // High win rate for depositing users (65%)
-        willUserWin = Math.random() < 0.65;
-      } else {
-        // "ai" - Smart Casino AI Algorithm:
-        // Adapts based on user ticket count and streak
-        const winProbability = Math.min(0.8, 0.25 + activeTickets.length * 0.15);
-        willUserWin = Math.random() < winProbability;
-      }
-
-      targetWinnerTypeRef.current = willUserWin ? "user" : "bot";
-
-      // If user is scheduled to win, set target draw between 18 - 25 balls
-      // If bot wins, set between 16 - 28 balls
-      targetWinningDrawRef.current = willUserWin
-        ? Math.floor(Math.random() * 8) + 18
-        : Math.floor(Math.random() * 12) + 16;
-
-      const randomName = BOT_NAMES[Math.floor(Math.random() * BOT_NAMES.length)] || "አበበ ተፈራ";
-      const randomPhone = `09${Math.floor(10 + Math.random() * 80)}***${Math.floor(10 + Math.random() * 89)}`;
-      let randomTicket = Math.floor(Math.random() * 500) + 1;
-      while (activeTickets.includes(randomTicket)) {
-        randomTicket = Math.floor(Math.random() * 500) + 1;
-      }
-      roomWinnerBotRef.current = {
-        name: randomName,
-        phone: randomPhone,
-        ticket: randomTicket,
-      };
-    }
-  }, [isGameStarted, botSettings, activeTickets.length]);
-
-  // Automatically confirm pending cartelas when game starts
-  useEffect(() => {
-    if (isGameStarted && pendingTickets.length > 0) {
-      setConfirmedTickets((prev) => Array.from(new Set([...prev, ...pendingTickets])));
-      setPendingTickets([]);
-    }
-  }, [isGameStarted, pendingTickets]);
-
-  // 3. Initialize ticket boards whenever active tickets change
-  useEffect(() => {
-    setTicketsData((prev) => {
-      const next = { ...prev };
-      let changed = false;
-      activeTickets.forEach((num) => {
-        if (!next[num] || next[num].length === 0) {
-          next[num] = generateBoardForTicket(num);
-          changed = true;
-        }
-      });
-      return changed ? next : prev;
-    });
-  }, [activeTickets]);
-
-  // 4. Continuous Ball Caller when round is active
-  useEffect(() => {
-    if (!isGameStarted || won) return;
-
-    const id = setInterval(() => {
-      setDrawn((prev) => {
-        if (prev.length >= MAX_NUMBER) return prev;
-        const newBall = randomDraw(prev);
-        if (newBall) {
-          buzz(12);
-          playNumberCallVoice(newBall);
-        }
-        return [newBall, ...prev];
-      });
-    }, 2800);
-
-    return () => clearInterval(id);
-  }, [isGameStarted, won]);
-
-  // 5. Automatic Bingo & Winner Evaluation on every drawn ball
-  useEffect(() => {
-    if (!isGameStarted || won || drawn.length === 0) return;
-
-    // Check if user won
-    for (const num of activeTickets) {
-      const cells = ticketsData[num] || [];
-      if (cells.length === 0) continue;
-
-      const evaluatedCells = cells.map((c) => ({
-        ...c,
-        marked:
-          c.marked ||
-          c.value === "FREE" ||
-          (typeof c.value === "number" && drawn.includes(c.value)),
-      }));
-
-      if (checkBingo(evaluatedCells)) {
-        buzz([20, 50, 20, 50, 40]);
-        setMainWallet((prev) => prev + liveJackpot);
-        const player = getStoredPlayer();
-        player.totalWon = (player.totalWon || 0) + liveJackpot;
-        player.gamesPlayed = (player.gamesPlayed || 0) + 1;
-        saveStoredPlayer(player);
-        setWinners([
-          {
-            name: `${player.name} (እርስዎ)`,
-            phone: player.phone ? player.phone.slice(0, 4) + "***" + player.phone.slice(-2) : "09***38",
-            ticket: num,
-            amount: liveJackpot,
-            isUser: true,
-          },
-        ]);
-        playBingoFanfare();
-        setWon(true);
-        return;
-      }
-
-    // Check if room/bot won (Only if bots/other players actually took tickets)
-    if (takenTickets.length > 0 && drawn.length >= targetWinningDrawRef.current) {
-      buzz([15, 40, 20]);
-      const bot = roomWinnerBotRef.current;
-      setWinners([
-        {
-          name: bot.name,
-          phone: bot.phone,
-          ticket: bot.ticket,
-          amount: liveJackpot,
-          isUser: false,
-        },
-      ]);
-      playBingoFanfare();
-      setWon(true);
-    }
-  }, [drawn, ticketsData, activeTickets, won, isGameStarted, liveJackpot, takenTickets.length]);
-
-  const toggleCell = (ticketNum: number, cellId: string) => {
-    setTicketsData((prev) => {
-      const currentCells = prev[ticketNum] || [];
-      const updated = currentCells.map((c) => {
-        if (c.id !== cellId) return c;
-        if (!c.marked && typeof c.value === "number" && !drawn.includes(c.value)) {
-          return c;
-        }
-        buzz(10);
-        return { ...c, marked: !c.marked };
-      });
-      return { ...prev, [ticketNum]: updated };
-    });
-  };
-
-  const handleNextRound = useCallback(() => {
-    setWon(false);
-    setDrawn([]);
-    setIsGameStarted(false);
-    setGlobalCountdown(45);
-    setConfirmedTickets([]);
-    setPendingTickets([]);
-    setTakenTickets([]);
-    setActiveTab("home");
-  }, []);
-
-  const handleManualStart = () => {
-    if (totalRoomTicketsRef.current <= 0) {
-      alert("እባክዎ መጀመሪያ ካርቴላ ይምረጡ ወይም ቦት ያስገቡ!");
-      return;
-    }
-    setIsGameStarted(true);
-    setActiveTab("game");
-    try {
-      window.location.hash = "game";
-    } catch {}
-  };
-
-  // Optimistic Cartela Selection / Refund Handler
-  const handleToggleTicket = (ticketNum: number) => {
-    if (isGameStarted) return;
-    buzz(10);
-
-    // If already selected: Refund 10 ETB back to Play Wallet
-    if (pendingTickets.includes(ticketNum)) {
-      setPendingTickets((prev) => prev.filter((x) => x !== ticketNum));
-      setPlayWallet((prev) => prev + STAKE_PER_TICKET);
-      return;
-    }
-
-    // If not selected: Check balance and purchase
-    if (pendingTickets.length >= MAX_SELECT) {
-      alert("ከ 4 ካርቴላ በላይ በአንድ ዙር መምረጥ አይቻልም (Max 4 tickets)!");
-      return;
-    }
-
-    const availableBal = playWallet + mainWallet;
-    if (availableBal < STAKE_PER_TICKET) {
-      alert("በሂሳብዎ ላይ በቂ ገንዘብ የለም! እባክዎ መጀመሪያ ገቢ (Deposit) ያድርጉ።");
-      return;
-    }
-
-    // Deduct 10 ETB optimistically
-    if (playWallet >= STAKE_PER_TICKET) {
-      setPlayWallet((prev) => prev - STAKE_PER_TICKET);
-    } else {
-      const remainder = STAKE_PER_TICKET - playWallet;
-      setPlayWallet(0);
-      setMainWallet((prev) => Math.max(0, prev - remainder));
-    }
-
-    setPendingTickets((prev) => [...prev, ticketNum]);
-  };
-
-  // Claim Floating Bonus
-  const handleClaimBonus = () => {
-    buzz([20, 50]);
-    setPlayWallet((prev) => prev + 25);
-    setShowPromoFloat(false);
-    setPromoToast("🎉 እንኳን ደስ አሎት! የ 25.00 ETB ነፃ ቦነስ ተቀብለዋል!");
-    setTimeout(() => setPromoToast(null), 3500);
-  };
-
-  // Redeem Promo Code
-  const handleRedeemPromo = () => {
-    const code = promoCodeInput.trim().toUpperCase();
-    if (!code) return;
-    buzz(15);
-    if (["SPARKVIP", "PHOENIX10", "BONUS20", "WELCOME", "VIP", "BINGO"].includes(code)) {
-      setPlayWallet((prev) => prev + 50);
-      setPromoToast(`🎉 እንኳን ደስ አሎት! ኮድ "${code}" ጸድቋል (+50 ETB)!`);
-      setShowPromoModal(false);
-      setPromoCodeInput("");
-    } else {
-      alert("❌ የተሳሳተ ወይም ያለፈበት የፕሮሞ ኮድ ነው!");
-    }
-    setTimeout(() => setPromoToast(null), 3500);
-  };
-
-  return (
-    <LanguageProvider>
-      <main className="relative min-h-screen bg-background text-foreground antialiased selection:bg-primary selection:text-primary-foreground">
-        {/* Offline Alert Banner */}
-        {isOffline && (
-          <div className="fixed top-0 inset-x-0 z-50 flex items-center justify-center gap-2 bg-red-600 px-4 py-2 text-xs font-black text-white shadow-lg animate-bounce">
-            <WifiOff className="h-4 w-4" />
-            <span>❌ ኢንተርኔት ተቋርጧል! (Internet Connection Lost)</span>
-          </div>
-        )}
-
-        {/* Success Toast */}
-        {promoToast && (
-          <div className="fixed top-12 left-1/2 -translate-x-1/2 z-50 flex items-center gap-2 rounded-2xl border border-gold bg-amber-950/95 px-4 py-2.5 text-xs font-black text-gold shadow-2xl backdrop-blur-md animate-in fade-in slide-in-from-top-4">
-            <Sparkles className="h-4 w-4 text-gold animate-spin" />
-            <span>{promoToast}</span>
-          </div>
-        )}
-
-        {/* Floating Bonus Claim Float Widget */}
-        {showPromoFloat && activeTab !== "admin" && !isGameStarted && (
-          <div
-            onClick={handleClaimBonus}
-            className="fixed top-36 right-3 z-40 flex cursor-pointer items-center gap-2 rounded-2xl border-2 border-white bg-gradient-to-r from-amber-400 via-gold to-yellow-500 p-2 text-black shadow-2xl transition-transform hover:scale-105 active:scale-95 animate-pulse"
-          >
-            <div className="grid h-8 w-8 place-items-center rounded-xl bg-black text-gold shadow-md text-base">
-              🎁
-            </div>
-            <div className="text-left pr-1">
-              <span className="block text-[9px] font-black uppercase tracking-tight leading-none text-black/80">
-                ቦነስ ይውሰዱ
-              </span>
-              <span className="text-xs font-black leading-none text-black">
-                +25 ETB
-              </span>
-            </div>
-          </div>
-        )}
-
-        {/* Promo Code Modal */}
-        {showPromoModal && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4 backdrop-blur-md">
-            <div className="relative w-full max-w-sm overflow-hidden rounded-3xl border-2 border-gold bg-gradient-to-b from-amber-950/90 via-card to-background p-6 shadow-2xl">
-              <button
-                type="button"
-                onClick={() => setShowPromoModal(false)}
-                className="absolute right-4 top-4 grid h-8 w-8 place-items-center rounded-full bg-secondary/80 text-muted-foreground hover:text-white"
-              >
-                <X className="h-4 w-4" />
-              </button>
-
-              <div className="text-center">
-                <div className="mx-auto grid h-14 w-14 place-items-center rounded-2xl bg-gradient-to-br from-amber-400 to-gold text-2xl shadow-glow-gold text-black">
-                  🎁
-                </div>
-                <h2 className="mt-3 text-lg font-black text-gold uppercase tracking-wider">
-                  የፕሮሞ ኮድ ያስገቡ
-                </h2>
-                <p className="mt-1 text-xs text-muted-foreground">
-                  (Redeem Promo Code for Free Birr)
-                </p>
-              </div>
-
-              <div className="mt-5">
-                <input
-                  type="text"
-                  value={promoCodeInput}
-                  onChange={(e) => setPromoCodeInput(e.target.value.toUpperCase())}
-                  placeholder="ENTER CODE (e.g. SPARKVIP)..."
-                  className="w-full rounded-2xl border border-gold/60 bg-black/60 px-4 py-3 text-center text-base font-black tracking-widest text-gold outline-none placeholder:text-muted-foreground/40 focus:border-gold focus:ring-1 focus:ring-gold"
-                />
-              </div>
-
-              <button
-                type="button"
-                onClick={handleRedeemPromo}
-                className="mt-4 flex w-full items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-amber-400 via-gold to-yellow-500 py-3.5 text-sm font-black uppercase tracking-wider text-black shadow-glow-gold transition-transform active:scale-95"
-              >
-                <Check className="h-4 w-4 stroke-[3]" />
-                አረጋግጥ (REDEEM CODE)
-              </button>
-            </div>
-          </div>
-        )}
-
-        {/* GameView (Tickets Page) - Replaces Home when game is active */}
-        <div className={activeTab === "game" || (activeTab === "home" && isGameStarted) ? "block" : "hidden"}>
-          <GameView
-            selectedTickets={activeTickets}
-            globalCountdown={globalCountdown}
-            isGameStarted={isGameStarted}
-            drawn={drawn}
-            won={won}
-            ticketsData={ticketsData}
-            toggleCell={toggleCell}
-            onNextRound={handleNextRound}
-            prize={liveJackpot}
-            totalRoomTickets={totalRoomTickets}
-          />
-        </div>
-
-        {activeTab === "home" && !isGameStarted && (
-          <LobbyView
-            pendingTickets={pendingTickets}
-            setPendingTickets={setPendingTickets}
-            onToggleTicket={handleToggleTicket}
-            takenTickets={takenTickets}
-            mainWallet={mainWallet}
-            playWallet={playWallet}
-            globalCountdown={globalCountdown}
-            isGameStarted={isGameStarted}
-            onStartGame={handleManualStart}
-            onNavigateWallet={() => setActiveTab("wallet")}
-            announcementText={announcementText}
-            jackpot={liveJackpot}
-            totalRoomTickets={totalRoomTickets}
-          />
-        )}
-
-        {activeTab === "wallet" && (
-          <WalletView
-            mainWallet={mainWallet}
-            setMainWallet={setMainWallet}
-            playWallet={playWallet}
-            setPlayWallet={setPlayWallet}
-          />
-        )}
-
-        {activeTab === "rank" && <RankView />}
-
-        {activeTab === "profile" && (
-          <ProfileView
-            onOpenPromoModal={() => setShowPromoModal(true)}
-            onNavigateAdmin={() => {
-              window.location.hash = "admin";
-              setActiveTab("admin");
-            }}
-            onNavigateFinance={() => {
-              window.location.hash = "finance";
-              setActiveTab("finance");
-            }}
-          />
-        )}
-
-        {activeTab === "admin" && (
-          <div className="min-h-screen w-full bg-[#050810]">
-            <AdminView
-              isGameStarted={isGameStarted}
-              setIsGameStarted={setIsGameStarted}
-              globalCountdown={globalCountdown}
-              setGlobalCountdown={setGlobalCountdown}
-              drawn={drawn}
-              setDrawn={setDrawn}
-              mainWallet={mainWallet}
-              setMainWallet={setMainWallet}
-              playWallet={playWallet}
-              setPlayWallet={setPlayWallet}
-              pendingTicketsCount={pendingTickets.length}
-              confirmedTicketsCount={confirmedTickets.length}
-              announcementText={announcementText}
-              setAnnouncementText={setAnnouncementText}
-              onResetRound={handleNextRound}
-              onNavigateFinance={() => {
-                window.location.hash = "finance";
-                setActiveTab("finance");
-              }}
-              onBackToGame={() => {
-                window.location.hash = "home";
-                setActiveTab("home");
-              }}
-              onInjectLiveBots={(count) => {
-                setTakenTickets((prev) => {
-                  const pool = new Set(prev);
-                  let attempts = 0;
-                  while (pool.size < Math.min(520, prev.length + count) && attempts < count * 3) {
-                    attempts++;
-                    const rand = Math.floor(Math.random() * TOTAL_TICKETS) + 1;
-                    if (!pendingTickets.includes(rand) && !confirmedTickets.includes(rand)) {
-                      pool.add(rand);
-                    }
-                  }
-                  return Array.from(pool);
-                });
-              }}
-              onClearLiveBots={() => {
-                setTakenTickets([]);
-              }}
-            />
-          </div>
-        )}
-
-        {activeTab === "finance" && (
-          <div className="min-h-screen w-full bg-[#080b11]">
-            <FinanceView
-              onNavigateAdmin={() => {
-                window.location.hash = "admin";
-                setActiveTab("admin");
-              }}
-              onBackToGame={() => {
-                window.location.hash = "home";
-                setActiveTab("home");
-              }}
-              mainWallet={mainWallet}
-              playWallet={playWallet}
-              liveJackpot={liveJackpot}
-              totalRoomTickets={totalRoomTickets}
-              ticketPrice={STAKE_PER_TICKET}
-            />
-          </div>
-        )}
-
-        {activeTab !== "admin" && activeTab !== "finance" && (
-          <BottomNav
-            activeTab={activeTab === "home" && isGameStarted ? "game" : activeTab}
-            isGameActive={isGameStarted}
-            onSelectTab={(tab) => {
-              const targetTab = tab === "home" && isGameStarted ? "game" : tab;
-              window.location.hash = targetTab;
-              setActiveTab(targetTab);
-            }}
-          />
-        )}
-
-        {/* Global Victory Overlay - visible anywhere in the app */}
-        <VictoryModal
-          open={won}
-          prize={liveJackpot}
-          winners={winners}
-          onNextRound={handleNextRound}
-        />
-      </main>
-    </LanguageProvider>
-  );
+/**
+ * Phoenix Bingo - Unified Platform Store & Telegram Integration
+ * 
+ * Manages:
+ * 1. Automatic Telegram Login (Zero Password Friction for Players)
+ * 2. Real-time Deposit & Withdrawal sync between Players & Admin
+ * 3. Fresh Clean-Slate Finance Engine starting from ZERO (0 ETB)
+ * 4. Direct Telegram Bot Dispatch for Deposit alerts, Approvals, & Broadcasts
+ */
+
+export interface PlayerProfile {
+  id: string;
+  telegramId?: number;
+  name: string;
+  username?: string;
+  phone: string;
+  photoUrl?: string;
+  isVerified: boolean;
+  isAutoLoggedIn: boolean;
+  mainWallet: number;
+  playWallet: number;
+  gamesPlayed: number;
+  totalWon: number;
+  joinedAt: string;
 }
 
-export default App;
+export interface PlatformTx {
+  id: string;
+  date: string;
+  playerId: string;
+  playerName: string;
+  phone: string;
+  bank: string;
+  amount: number;
+  smsText?: string;
+  txRef?: string;
+  destinationAccount?: string;
+  type: "deposit" | "withdraw";
+  status: "Pending" | "Approved" | "Rejected";
+}
+
+export interface FinanceMetrics {
+  historicalTurnover: number;
+  historicalWinningsPaid: number;
+  historicalGrossProfit: number;
+  bonusExpenses: number;
+  promoterCommPaid: number;
+  totalDeposits: number;
+  totalWithdrawals: number;
+  totalUsersCount: number;
+  activeTodayCount: number;
+}
+
+export interface RegisteredUser {
+  id: string;
+  telegramId?: number;
+  name: string;
+  username?: string;
+  phone: string;
+  playBalance: number;
+  mainBalance: number;
+  totalDeposited: number;
+  won: number;
+  status: "active" | "banned";
+  lastActive: string;
+}
+
+// Telegram Bot credentials
+export const TELEGRAM_BOT_TOKEN = "8606075616:AAEFVgE-_lIz33iYUBB6fzcWYPwXOm4f72g";
+export const TELEGRAM_BOT_API = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}`;
+export const DEFAULT_ADMIN_USERNAME = "@Phonix_s";
+
+// --- Telegram WebApp Helper ---
+export function getTelegramWebAppUser() {
+  if (typeof window === "undefined") return null;
+  const tg = (window as unknown as { Telegram?: { WebApp?: { initDataUnsafe?: { user?: { id: number; first_name?: string; last_name?: string; username?: string; photo_url?: string } } } } }).Telegram?.WebApp;
+  return tg?.initDataUnsafe?.user || null;
+}
+
+// Expand Telegram WebApp on launch
+if (typeof window !== "undefined") {
+  try {
+    const tg = (window as unknown as { Telegram?: { WebApp?: { ready: () => void; expand: () => void } } }).Telegram?.WebApp;
+    if (tg) {
+      tg.ready();
+      tg.expand();
+    }
+  } catch {}
+}
+
+// --- Player Profile Store ---
+const STORAGE_KEY_PLAYER = "phoenix_active_player";
+const STORAGE_KEY_TXS = "phoenix_platform_transactions";
+const STORAGE_KEY_FINANCE = "phoenix_finance_metrics_v2";
+const STORAGE_KEY_USERS = "phoenix_registered_users_v2";
+const STORAGE_KEY_BROADCAST = "phoenix_live_broadcast";
+
+export function getStoredPlayer(): PlayerProfile {
+  const tgUser = getTelegramWebAppUser();
+  
+  // Read parameters from search or hash (e.g. ?tgId=...&phone=...&name=...&bonus=...&balance=...)
+  let urlParams: URLSearchParams | null = null;
+  if (typeof window !== "undefined") {
+    urlParams = new URLSearchParams(window.location.search);
+    if (window.location.hash && window.location.hash.includes("?")) {
+      const hashQuery = window.location.hash.split("?")[1];
+      const hashParams = new URLSearchParams(hashQuery);
+      hashParams.forEach((v, k) => {
+        if (!urlParams!.has(k)) urlParams!.set(k, v);
+      });
+    }
+  }
+
+  let baseProfile: PlayerProfile;
+
+  try {
+    const saved = localStorage.getItem(STORAGE_KEY_PLAYER);
+    if (saved) {
+      baseProfile = JSON.parse(saved);
+      // Ensure defaults if missing or corrupted
+      if (typeof baseProfile.mainWallet !== "number" || isNaN(baseProfile.mainWallet)) {
+        baseProfile.mainWallet = 0.0;
+      }
+      if (typeof baseProfile.playWallet !== "number" || isNaN(baseProfile.playWallet)) {
+        baseProfile.playWallet = 15.0; // 15 ETB Play Bonus
+      }
+    } else {
+      // Start completely FRESH with 15.00 ETB Play Bonus and 0.00 ETB Main Wallet
+      baseProfile = {
+        id: tgUser ? `tg-${tgUser.id}` : `PX-${Math.floor(1000 + Math.random() * 9000)}`,
+        telegramId: tgUser?.id,
+        name: tgUser ? [tgUser.first_name, tgUser.last_name].filter(Boolean).join(" ") : "ተጫዋች (Player)",
+        username: tgUser?.username ? `@${tgUser.username}` : undefined,
+        phone: "",
+        photoUrl: tgUser?.photo_url,
+        isVerified: !!tgUser,
+        isAutoLoggedIn: !!tgUser,
+        mainWallet: 0.0, // 0.00 ETB Main Wallet (Withdrawable)
+        playWallet: 15.0, // 15.00 ETB Play Wallet (Initial Bonus)
+        gamesPlayed: 0,
+        totalWon: 0,
+        joinedAt: new Date().toLocaleDateString("en-US", { month: "short", day: "numeric" }),
+      };
+    }
+  } catch {
+    baseProfile = {
+      id: `PX-${Math.floor(1000 + Math.random() * 9000)}`,
+      name: "ተጫዋች (Player)",
+      phone: "",
+      isVerified: false,
+      isAutoLoggedIn: false,
+      mainWallet: 0.0,
+      playWallet: 15.0, // 15.00 ETB Play Wallet
+      gamesPlayed: 0,
+      totalWon: 0,
+      joinedAt: "Today",
+    };
+  }
+
+  // URL override/sync from Telegram Bot link
+  if (urlParams) {
+    const qTgId = urlParams.get("tgId");
+    if (qTgId) {
+      baseProfile.telegramId = Number(qTgId);
+      baseProfile.id = `tg-${qTgId}`;
+      baseProfile.isAutoLoggedIn = true;
+      baseProfile.isVerified = true;
+    }
+    const qPhone = urlParams.get("phone");
+    if (qPhone && qPhone.trim()) {
+      baseProfile.phone = decodeURIComponent(qPhone).trim();
+      baseProfile.isVerified = true;
+    }
+    const qName = urlParams.get("name");
+    if (qName && qName.trim()) {
+      baseProfile.name = decodeURIComponent(qName).trim();
+    }
+    const qBonus = urlParams.get("bonus");
+    if (qBonus && !isNaN(parseFloat(qBonus))) {
+      baseProfile.playWallet = parseFloat(qBonus);
+    }
+    const qBalance = urlParams.get("balance");
+    if (qBalance && !isNaN(parseFloat(qBalance))) {
+      baseProfile.mainWallet = parseFloat(qBalance);
+    }
+  }
+
+  // If user opened inside Telegram, automatically update/sync their Telegram Identity
+  if (tgUser) {
+    baseProfile.telegramId = tgUser.id;
+    baseProfile.isAutoLoggedIn = true;
+    baseProfile.isVerified = true;
+    if (tgUser.first_name || tgUser.last_name) {
+      baseProfile.name = [tgUser.first_name, tgUser.last_name].filter(Boolean).join(" ");
+    }
+    if (tgUser.username) {
+      baseProfile.username = `@${tgUser.username}`;
+    }
+    if (tgUser.photo_url) {
+      baseProfile.photoUrl = tgUser.photo_url;
+    }
+  }
+
+  return baseProfile;
+}
+
+export function getStoredWalletBalances(): { mainWallet: number; playWallet: number } {
+  const player = getStoredPlayer();
+  return {
+    mainWallet: typeof player.mainWallet === "number" && !isNaN(player.mainWallet) ? player.mainWallet : 0.0,
+    playWallet: typeof player.playWallet === "number" && !isNaN(player.playWallet) ? player.playWallet : 15.0,
+  };
+}
+
+export function saveStoredWalletBalances(mainWallet: number, playWallet: number) {
+  try {
+    const player = getStoredPlayer();
+    player.mainWallet = mainWallet;
+    player.playWallet = playWallet;
+    saveStoredPlayer(player);
+    window.dispatchEvent(new CustomEvent("phoenix_wallet_updated", { detail: { mainWallet, playWallet } }));
+  } catch {}
+}
+
+export function saveStoredPlayer(player: PlayerProfile) {
+  try {
+    localStorage.setItem(STORAGE_KEY_PLAYER, JSON.stringify(player));
+    // Also sync with registered users list for Admin View
+    syncPlayerToUsersDirectory(player);
+    window.dispatchEvent(new CustomEvent("phoenix_player_updated", { detail: player }));
+  } catch {}
+}
+
+// --- Registered Users Store for Admin ---
+export function getRegisteredUsers(): RegisteredUser[] {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY_USERS);
+    if (raw) return JSON.parse(raw);
+  } catch {}
+  
+  // Clean initial: register current player
+  const current = getStoredPlayer();
+  const initial = [
+    {
+      id: current.id,
+      telegramId: current.telegramId,
+      name: current.name,
+      username: current.username,
+      phone: current.phone || "Not linked",
+      playBalance: current.playWallet,
+      mainBalance: current.mainWallet,
+      totalDeposited: 0,
+      won: current.totalWon,
+      status: "active" as const,
+      lastActive: "Active now",
+    },
+  ];
+  try {
+    localStorage.setItem(STORAGE_KEY_USERS, JSON.stringify(initial));
+  } catch {}
+  return initial;
+}
+
+export function saveRegisteredUsers(users: RegisteredUser[]) {
+  try {
+    localStorage.setItem(STORAGE_KEY_USERS, JSON.stringify(users));
+    window.dispatchEvent(new CustomEvent("phoenix_users_updated", { detail: users }));
+  } catch {}
+}
+
+function syncPlayerToUsersDirectory(player: PlayerProfile) {
+  try {
+    const users = getRegisteredUsers();
+    const idx = users.findIndex((u) => u.id === player.id || (player.telegramId && u.telegramId === player.telegramId));
+    if (idx >= 0) {
+      users[idx] = {
+        ...users[idx]!,
+        name: player.name,
+        username: player.username,
+        phone: player.phone || users[idx]!.phone,
+        mainBalance: player.mainWallet,
+        playBalance: player.playWallet,
+        won: player.totalWon,
+        lastActive: "Active now",
+      };
+    } else {
+      users.unshift({
+        id: player.id,
+        telegramId: player.telegramId,
+        name: player.name,
+        username: player.username,
+        phone: player.phone || "Not linked",
+        mainBalance: player.mainWallet,
+        playBalance: player.playWallet,
+        totalDeposited: 0,
+        won: player.totalWon,
+        status: "active",
+        lastActive: "Active now",
+      });
+    }
+    saveRegisteredUsers(users);
+  } catch {}
+}
+
+// --- Transactions Store (Starts Clean: 0 pending old items) ---
+export function getStoredTransactions(): PlatformTx[] {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY_TXS);
+    if (raw) return JSON.parse(raw);
+  } catch {}
+  return []; // Clean empty start!
+}
+
+export function saveStoredTransactions(txs: PlatformTx[]) {
+  try {
+    localStorage.setItem(STORAGE_KEY_TXS, JSON.stringify(txs));
+    window.dispatchEvent(new CustomEvent("phoenix_transactions_updated", { detail: txs }));
+  } catch {}
+}
+
+// --- Player Deposit Request ---
+export async function submitPlayerDeposit(params: {
+  amount: number;
+  bank: string;
+  phone?: string;
+  smsText?: string;
+  txRef?: string;
+}): Promise<PlatformTx> {
+  const player = getStoredPlayer();
+  const txId = `TX-${Math.floor(1000 + Math.random() * 9000)}`;
+  const now = new Date();
+  const dateStr = now.toLocaleDateString("en-US", { month: "short", day: "numeric" }) + " · " + now.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: false });
+
+  const newTx: PlatformTx = {
+    id: txId,
+    date: dateStr,
+    playerId: player.id,
+    playerName: player.name,
+    phone: params.phone || player.phone || "N/A",
+    bank: params.bank,
+    amount: params.amount,
+    smsText: params.smsText || `Deposit via ${params.bank}`,
+    txRef: params.txRef || `REF-${Math.floor(100000 + Math.random() * 900000)}`,
+    type: "deposit",
+    status: "Pending",
+  };
+
+  const txs = getStoredTransactions();
+  const updated = [newTx, ...txs];
+  saveStoredTransactions(updated);
+
+  // Send Telegram notification to Admin!
+  const alertText = 
+`🔔 <b>አዲስ የገቢ (Deposit) ጥያቄ ደርሷል!</b>
+
+• <b>ተጫዋች:</b> ${player.name} (${player.username || player.id})
+• <b>መጠን:</b> <b>${params.amount} ETB</b>
+• <b>የክፍያ መንገድ:</b> ${params.bank}
+• <b>ስልክ:</b> ${newTx.phone}
+• <b>TxRef:</b> <code>${newTx.txRef}</code>
+• <b>ደረሰኝ/SMS:</b> <i>${newTx.smsText?.slice(0, 100)}</i>
+
+👉 አድሚን ዳሽቦርድ ላይ ማጽደቅ ወይም መሰረዝ ይችላሉ!`;
+
+  sendTelegramAlert(alertText).catch(() => {});
+
+  return newTx;
+}
+
+// --- Player Withdrawal Request ---
+export async function submitPlayerWithdrawal(params: {
+  amount: number;
+  bank: string;
+  destinationAccount: string;
+  phone?: string;
+}): Promise<{ success: boolean; message?: string; tx?: PlatformTx }> {
+  const player = getStoredPlayer();
+  if (params.amount > player.mainWallet) {
+    return { success: false, message: "በቂ ቀሪ ሂሳብ የለም!" };
+  }
+
+  // Deduct from player's balance immediately to hold funds safely
+  player.mainWallet = Math.max(0, player.mainWallet - params.amount);
+  saveStoredPlayer(player);
+
+  const txId = `TX-${Math.floor(1000 + Math.random() * 9000)}`;
+  const now = new Date();
+  const dateStr = now.toLocaleDateString("en-US", { month: "short", day: "numeric" }) + " · " + now.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: false });
+
+  const newTx: PlatformTx = {
+    id: txId,
+    date: dateStr,
+    playerId: player.id,
+    playerName: player.name,
+    phone: params.phone || player.phone || "N/A",
+    bank: params.bank,
+    amount: -params.amount,
+    destinationAccount: params.destinationAccount,
+    type: "withdraw",
+    status: "Pending",
+  };
+
+  const txs = getStoredTransactions();
+  saveStoredTransactions([newTx, ...txs]);
+
+  // Send Telegram notification to Admin!
+  const alertText = 
+`📤 <b>አዲስ የወጪ (Withdrawal) ጥያቄ ደርሷል!</b>
+
+• <b>ተጫዋች:</b> ${player.name} (${player.username || player.id})
+• <b>የወጪ መጠን:</b> <b>${params.amount} ETB</b>
+• <b>መላኪያ ባንክ:</b> ${params.bank}
+• <b>የተጠቃሚ ሂሳብ/ቁጥር:</b> <code>${params.destinationAccount}</code>
+
+👉 አድሚን ዳሽቦርድ ላይ ያረጋግጡ!`;
+
+  sendTelegramAlert(alertText).catch(() => {});
+
+  return { success: true, tx: newTx };
+}
+
+// --- Admin Approves Transaction ---
+export function approvePlatformTransaction(txId: string): boolean {
+  const txs = getStoredTransactions();
+  const tx = txs.find((t) => t.id === txId);
+  if (!tx || tx.status !== "Pending") return false;
+
+  tx.status = "Approved";
+  saveStoredTransactions([...txs]);
+
+  // Update Finance
+  const finance = getStoredFinanceMetrics();
+  if (tx.type === "deposit") {
+    finance.totalDeposits += Math.abs(tx.amount);
+    
+    // Credit player if it's the current player
+    const player = getStoredPlayer();
+    if (player.id === tx.playerId) {
+      player.mainWallet += Math.abs(tx.amount);
+      // Optional 20% bonus for 100+ ETB
+      if (Math.abs(tx.amount) >= 100) {
+        player.playWallet += Math.abs(tx.amount) * 0.2;
+      }
+      saveStoredPlayer(player);
+    } else {
+      // Update registered users table
+      const users = getRegisteredUsers();
+      const u = users.find((x) => x.id === tx.playerId);
+      if (u) {
+        u.mainBalance += Math.abs(tx.amount);
+        u.totalDeposited += Math.abs(tx.amount);
+        saveRegisteredUsers(users);
+      }
+    }
+  } else {
+    // Withdrawal approved
+    finance.totalWithdrawals += Math.abs(tx.amount);
+  }
+  saveStoredFinanceMetrics(finance);
+
+  // Send Telegram confirmation notification
+  const confirmText = 
+`✅ <b>የግብይት ማረጋገጫ (Transaction Approved)</b>
+
+• <b>መለያ ቁጥር:</b> <code>${tx.id}</code>
+• <b>አይነት:</b> ${tx.type === "deposit" ? "ገቢ (Deposit) 📥" : "ወጪ (Withdrawal) 📤"}
+• <b>መጠን:</b> <b>${Math.abs(tx.amount)} ETB</b>
+• <b>ሁኔታ:</b> ጸድቋል (Approved) ✅`;
+
+  sendTelegramAlert(confirmText).catch(() => {});
+  return true;
+}
+
+// --- Admin Rejects Transaction ---
+export function rejectPlatformTransaction(txId: string): boolean {
+  const txs = getStoredTransactions();
+  const tx = txs.find((t) => t.id === txId);
+  if (!tx || tx.status !== "Pending") return false;
+
+  tx.status = "Rejected";
+  saveStoredTransactions([...txs]);
+
+  // If withdrawal was rejected, refund the held money back to player
+  if (tx.type === "withdraw") {
+    const refundAmt = Math.abs(tx.amount);
+    const player = getStoredPlayer();
+    if (player.id === tx.playerId) {
+      player.mainWallet += refundAmt;
+      saveStoredPlayer(player);
+    } else {
+      const users = getRegisteredUsers();
+      const u = users.find((x) => x.id === tx.playerId);
+      if (u) {
+        u.mainBalance += refundAmt;
+        saveRegisteredUsers(users);
+      }
+    }
+  }
+
+  return true;
+}
+
+// --- Finance Metrics Store (Starts at ZERO) ---
+const DEFAULT_FINANCE: FinanceMetrics = {
+  historicalTurnover: 0.0,
+  historicalWinningsPaid: 0.0,
+  historicalGrossProfit: 0.0,
+  bonusExpenses: 0.0,
+  promoterCommPaid: 0.0,
+  totalDeposits: 0.0,
+  totalWithdrawals: 0.0,
+  totalUsersCount: 1,
+  activeTodayCount: 1,
+};
+
+export function getStoredFinanceMetrics(): FinanceMetrics {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY_FINANCE);
+    if (raw) return { ...DEFAULT_FINANCE, ...JSON.parse(raw) };
+  } catch {}
+  return DEFAULT_FINANCE;
+}
+
+export function saveStoredFinanceMetrics(metrics: FinanceMetrics) {
+  try {
+    localStorage.setItem(STORAGE_KEY_FINANCE, JSON.stringify(metrics));
+    window.dispatchEvent(new CustomEvent("phoenix_finance_updated", { detail: metrics }));
+  } catch {}
+}
+
+export function resetFinanceToZero() {
+  saveStoredFinanceMetrics(DEFAULT_FINANCE);
+}
+
+// --- Telegram Direct Dispatcher ---
+export async function sendTelegramAlert(messageText: string, customChatId?: string): Promise<{ success: boolean; error?: string }> {
+  try {
+    // If customChatId is not provided, try to send to admin channel or saved chat id
+    const targetChat = customChatId || localStorage.getItem("phoenix_admin_chat_id") || DEFAULT_ADMIN_USERNAME;
+
+    const res = await fetch(`${TELEGRAM_BOT_API}/sendMessage`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        chat_id: targetChat,
+        text: messageText,
+        parse_mode: "HTML",
+      }),
+    });
+
+    const data = await res.json();
+    if (data.ok) {
+      return { success: true };
+    } else {
+      console.warn("Telegram API response:", data);
+      return { success: false, error: data.description || "Failed" };
+    }
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error("Error sending Telegram alert:", msg);
+    return { success: false, error: msg };
+  }
+}
+
+// --- Live Broadcast Store & Dispatcher ---
+export function getStoredBroadcast(): string {
+  try {
+    return localStorage.getItem(STORAGE_KEY_BROADCAST) || "⚡ Instant Telebirr, CBE & M-Pesa Payouts • የቀጥታ ጃክፖት ሽልማት ክፍያ Live";
+  } catch {
+    return "⚡ Instant Telebirr, CBE & M-Pesa Payouts • የቀጥታ ጃክፖት ሽልማት ክፍያ Live";
+  }
+}
+
+export async function broadcastMessage(text: string, target: "all" | "telegram" | "web" = "all"): Promise<{ success: boolean; telegramStatus?: string }> {
+  // 1. Update web announcement bar
+  if (target === "all" || target === "web") {
+    try {
+      localStorage.setItem(STORAGE_KEY_BROADCAST, text);
+      window.dispatchEvent(new CustomEvent("phoenix_broadcast_updated", { detail: text }));
+    } catch {}
+  }
+
+  // 2. Dispatch to Telegram
+  let telegramStatus = "Skipped";
+  if (target === "all" || target === "telegram") {
+    const tgMsg = `📢 <b>የፊኒክስ ቢንጎ የቀጥታ ማስታወቂያ (Official Announcement)</b>\n\n${text}\n\n🎮 <b>አሁኑኑ ይጫወቱ:</b> https://phoenix-bingo.onrender.com`;
+    const res = await sendTelegramAlert(tgMsg);
+    telegramStatus = res.success ? "Sent successfully ✅" : `Failed: ${res.error}`;
+  }
+
+  return { success: true, telegramStatus };
+}
