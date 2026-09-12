@@ -48,7 +48,8 @@ const CONTACT_KEYBOARD = {
 function getVerifiedKeyboard(user) {
   const bonus = user.bonus != null ? user.bonus : ADMIN_CONFIG.initialPlayBonus;
   const balance = user.balance != null ? user.balance : 0;
-  const playUrl = WEBAPP_URL + "?tgId=" + user.userId + "&phone=" + encodeURIComponent(user.phone || "") + "&name=" + encodeURIComponent(user.name || "") + "&bonus=" + bonus + "&balance=" + balance;
+  const cleanBase = (process.env.WEBAPP_URL || "https://phoenix-bingo.onrender.com").replace(/#.*$/, "");
+  const playUrl = `${cleanBase}?tgId=${user.userId}&phone=${encodeURIComponent(user.phone || "")}&name=${encodeURIComponent(user.name || "")}&bonus=${bonus}&balance=${balance}#home`;
   return {
     keyboard: [
       [{ text: "🎮 ጌም ይጫወቱ (PLAY)", web_app: { url: playUrl } }],
