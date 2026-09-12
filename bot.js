@@ -7,16 +7,16 @@ import https from "node:https";
 import http from "node:http";
 import { MongoClient } from "mongodb";
 
-// 1. Render Web Service Health Check Server
+// 1. Render Health Check Server (Port 10000)
 const PORT = process.env.PORT || 10000;
 http.createServer((req, res) => {
   res.writeHead(200, { "Content-Type": "text/plain" });
-  res.end("Phoenix Bingo Bot is running 24/7 with MongoDB Atlas!\n");
+  res.end("Phoenix Bingo Bot is running 24/7!\n");
 }).listen(PORT, () => {
-  console.log("HTTP health-check server listening on port " + PORT);
+  console.log("Health check server listening on port " + PORT);
 });
 
-// 2. Constants & Settings
+// 2. Settings
 const BOT_TOKEN = process.env.BOT_TOKEN || "8606075616:AAFmq_dQ_eCRDzEqnw5N2Ybc9_dkOS5BiDg";
 const WEBAPP_URL = process.env.WEBAPP_URL || "https://phoenix-bingo.onrender.com/#home";
 const MONGO_URI = process.env.MONGO_URI || "mongodb+srv://Phoenix:761724@cluster0.pivq9lg.mongodb.net/phoenix_bingo?retryWrites=true&w=majority";
@@ -30,7 +30,7 @@ const ADMIN_CONFIG = {
   initialPlayBonus: 15.00, // 15 ETB መጫወቻ ቦነስ
 };
 
-// 📱 ስልኩን ያላረጋገጠ ሰው የሚያየው አንድ እና ብቸኛ ቁልፍ
+// ስልኩን ያላጋራ ሰው የሚያየው ብቸኛ ቁልፍ
 const CONTACT_KEYBOARD = {
   keyboard: [
     [
@@ -44,12 +44,9 @@ const CONTACT_KEYBOARD = {
   one_time_keyboard: false,
 };
 
-// 🎮 ስልኩን ያረጋገጠ ሰው ብቻ የሚያየው ዋና ኪቦርድ (በብሮውዘር ክፈት የሌለበት!)
+// ስልኩን ያረጋገጠ ሰው የሚያየው ዋና ኪቦርድ (በብሮውዘር ክፈት የሌለበት!)
 function getVerifiedKeyboard(user) {
-  const bonus = user.bonus != null ? user.bonus : ADMIN_CONFIG.initialPlayBonus;
-  const balance = user.balance != null ? user.balance : 0;
-  const cleanBase = (process.env.WEBAPP_URL || "https://phoenix-bingo.onrender.com").replace(/#.*$/, "");
-  const playUrl = `${cleanBase}?tgId=${user.userId}&phone=${encodeURIComponent(user.phone || "")}&name=${encodeURIComponent(user.name || "")}&bonus=${bonus}&balance=${balance}#home`;
+  const playUrl = WEBAPP_URL + "?tgId=" + user.userId + "&phone=" + encodeURIComponent(user.phone || "") + "&name=" + encodeURIComponent(user.name || "");
   return {
     keyboard: [
       [{ text: "🎮 ጌም ይጫወቱ (PLAY)", web_app: { url: playUrl } }],
@@ -90,15 +87,7 @@ function generatePassword() {
 async function getOrCreateUser(userId, userName, username) {
   const database = await getDatabase();
   if (!database) {
-    return {
-      userId: String(userId),
-      name: userName || "ተጫዋች",
-      phone: "",
-      balance: 0.00,
-      bonus: ADMIN_CONFIG.initialPlayBonus,
-      totalWon: 0.00,
-      password: generatePassword(),
-    };
+    return { userId: String(userId), name: userName, phone: "", balance: 0, bonus: ADMIN_CONFIG.initialPlayBonus, password: generatePassword() };
   }
   const usersCollection = database.collection("users");
   
@@ -261,9 +250,7 @@ async function handleUpdate(update) {
     const cleanPhone = await registerUserPhone(userId, contactPhone);
     user.phone = cleanPhone;
 
-    const bonus = user.bonus != null ? user.bonus : ADMIN_CONFIG.initialPlayBonus;
-    const balance = user.balance != null ? user.balance : 0;
-    const playUrl = WEBAPP_URL + "?tgId=" + userId + "&phone=" + encodeURIComponent(cleanPhone) + "&name=" + encodeURIComponent(userName) + "&bonus=" + bonus + "&balance=" + balance;
+    const playUrl = WEBAPP_URL + "?tgId=" + userId + "&phone=" + encodeURIComponent(cleanPhone) + "&name=" + encodeURIComponent(userName);
 
     const welcomeMsg = [
       "🎉 <b>እንኳን ደስ አሎት " + userName + "! ምዝገባው ተጠናቋል።</b>",
@@ -274,8 +261,8 @@ async function handleUpdate(update) {
       "🔹 <b>ስልክ:</b> <code>" + cleanPhone + "</code>",
       "🔑 <b>የይለፍ ቃል:</b> <code>" + user.password + "</code>",
       "",
-      "💰 <b>መጫወቻ ሂሳብ:</b> <b>" + bonus.toFixed(2) + " ETB</b>",
-      "💰 <b>ዋና ሂሳብ:</b> <b>" + balance.toFixed(2) + " ETB</b>",
+      "💰 <b>መጫወቻ ሂሳብ:</b> <b>" + (user.bonus || 15).toFixed(2) + " ETB</b>",
+      "💰 <b>ዋና ሂሳብ:</b> <b>" + (user.balance || 0).toFixed(2) + " ETB</b>",
       "",
       "👇 <b>ጌሙን ለመጀመር ከታች '🎮 ጌም ይጫወቱ (PLAY)' የሚለውን ይጫኑ።</b>"
     ].join("\n");
@@ -290,7 +277,7 @@ async function handleUpdate(update) {
     return;
   }
 
-  // 2. 🛑 ስልኩን ያላጋራ ሰው ሌላ ምንም ነገር እንዳያይ መከልከል
+  // 2. 🛑 ስልኩን ያላጋራ ሰው ሌላ ምንም ነገር እንዳያይ መከልከል (ብቸኛ መልእክት)
   if (!user.phone) {
     const askPhoneMsg = [
       "🇪🇹 <b>እንኳን ወደ ፊኒክስ ቢንጎ በደህና መጡ!</b> 🦅",
@@ -316,16 +303,13 @@ async function handleUpdate(update) {
 
   // 4. 🎮 ጌም ይጫወቱ (ስልካቸውን ላረጋገጡ ብቻ — "በብሮውዘር ክፈት" የሌለበት!)
   if (text === "/play" || text === "/start" || text.includes("play") || text.includes("ጌም")) {
-    const bonus = user.bonus != null ? user.bonus : ADMIN_CONFIG.initialPlayBonus;
-    const balance = user.balance != null ? user.balance : 0;
-    const playUrl = WEBAPP_URL + "?tgId=" + userId + "&phone=" + encodeURIComponent(user.phone) + "&name=" + encodeURIComponent(userName) + "&bonus=" + bonus + "&balance=" + balance;
-
+    const playUrl = WEBAPP_URL + "?tgId=" + userId + "&phone=" + encodeURIComponent(user.phone) + "&name=" + encodeURIComponent(userName);
     const msg = [
       "🇪🇹 <b>እንኳን ወደ ፊኒክስ ቢንጎ በደህና መጡ፣ " + userName + "!</b> 🎮",
       "",
       "📱 <b>ስልክ:</b> <code>" + user.phone + "</code>",
-      "💰 <b>መጫወቻ ሂሳብ:</b> <b>" + bonus.toFixed(2) + " ETB</b>",
-      "💰 <b>ዋና ሂሳብ:</b> <b>" + balance.toFixed(2) + " ETB</b>",
+      "💰 <b>መጫወቻ ሂሳብ:</b> <b>" + (user.bonus || 0).toFixed(2) + " ETB</b>",
+      "💰 <b>ዋና ሂሳብ:</b> <b>" + (user.balance || 0).toFixed(2) + " ETB</b>",
       "",
       "👇 <b>ከታች ያለውን ሰማያዊ ቁልፍ ተጭነው ጨዋታውን ይክፈቱ፦</b>"
     ].join("\n");
@@ -343,7 +327,7 @@ async function handleUpdate(update) {
   // 5. 💰 ሒሳብ ማረጋገጫ
   if (text === "/account" || text.includes("account") || text.includes("ሂሳብ") || text.includes("ሒሳብ")) {
     const balanceStr = (user.balance || 0).toFixed(2);
-    const bonusStr = (user.bonus != null ? user.bonus : ADMIN_CONFIG.initialPlayBonus).toFixed(2);
+    const bonusStr = (user.bonus || 0).toFixed(2);
     const wonStr = (user.totalWon || 0).toFixed(2);
 
     const msg = [
