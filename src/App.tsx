@@ -29,6 +29,7 @@ import {
   saveStoredPlayer,
   getStoredWalletBalances,
   saveStoredWalletBalances,
+  claimWelcomePlayBonus,
 } from "@/lib/platformStore";
 
 const TOTAL_TICKETS = 550;
@@ -473,6 +474,14 @@ export function App() {
 
     const availableBal = playWallet + mainWallet;
     if (availableBal < STAKE_PER_TICKET) {
+      if (playWallet <= 0 && mainWallet <= 0) {
+        buzz([20, 40]);
+        claimWelcomePlayBonus(15.0);
+        setPlayWallet(15.0);
+        setPromoToast("🎁 የ 15.00 ETB ነፃ የመጫወቻ ቦነስ ተሰጥቶዎታል! አሁን ካርቴላ መምረጥ ይችላሉ።");
+        setTimeout(() => setPromoToast(null), 3500);
+        return;
+      }
       alert("በሂሳብዎ ላይ በቂ ገንዘብ የለም! እባክዎ መጀመሪያ ገቢ (Deposit) ያድርጉ።");
       return;
     }
@@ -630,6 +639,13 @@ export function App() {
             announcementText={announcementText}
             jackpot={liveJackpot}
             totalRoomTickets={totalRoomTickets}
+            onClaimBonus={() => {
+              buzz([20, 50]);
+              claimWelcomePlayBonus(15.0);
+              setPlayWallet((prev) => prev + 15);
+              setPromoToast("🎉 የ 15.00 ETB ነፃ የመጫወቻ ቦነስ ተቀብለዋል!");
+              setTimeout(() => setPromoToast(null), 3500);
+            }}
           />
         )}
 
