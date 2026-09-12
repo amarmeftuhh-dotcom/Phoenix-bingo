@@ -362,9 +362,9 @@ export function App() {
       }
     }
 
-    // Room Winner Bot when victory phase is reached
-    const snap = getLiveRoundSnapshot();
-    if (snap.phase === "victory" && !won) {
+    // Room Winner when victory phase is reached (shown to everyone so it feels live and real!)
+    const snap = getLiveRoundSnapshot(activeTickets);
+    if (snap.phase === "victory" && !won && snap.totalRoomTickets > 0) {
       buzz([15, 40, 20]);
       const bot = snap.winnerInfo;
       setWinners([
