@@ -37,6 +37,12 @@ import {
   getUserRoundTickets,
   clearOldRoundTickets,
 } from "@/lib/liveSyncEngine";
+import {
+  fetchServerRoomState,
+  claimRemoteTicket,
+  releaseRemoteTicket,
+  subscribeRoomSync,
+} from "@/lib/roomSyncService";
 
 const TOTAL_TICKETS = 550;
 const STAKE_PER_TICKET = 10;
@@ -81,6 +87,8 @@ export function App() {
     return initialSnap.phase !== "lobby" ? savedTickets : [];
   });
   const [takenTickets, setTakenTickets] = useState<number[]>(initialSnap.takenTickets);
+  const [serverTakenTickets, setServerTakenTickets] = useState<number[]>([]);
+  const [waitingForPlayers, setWaitingForPlayers] = useState<boolean>(initialSnap.waitingForPlayers);
   const [mainWallet, setMainWallet] = useState<number>(() => getStoredWalletBalances().mainWallet);
   const [playWallet, setPlayWallet] = useState<number>(() => getStoredWalletBalances().playWallet);
 
@@ -241,15 +249,35 @@ export function App() {
 
   // 1. Synchronized Universal Game Room Loop (500ms precision sync)
   useEffect(() => {
+    // Initial fetch from server
+    fetchServerRoomState(currentRoundId);
+
+    // Subscribe to multi-device updates
+    const unsubscribe = subscribeRoomSync(({ roundId, takenTickets }) => {
+      if (roundId === currentRoundId) {
+        setServerTakenTickets(takenTickets);
+      }
+    });
+
     const syncInterval = setInterval(() => {
       const activeUserTickets = Array.from(new Set([...confirmedTickets, ...pendingTickets]));
-      const snap = getLiveRoundSnapshot(activeUserTickets);
+      const player = getStoredPlayer();
+      const snap = getLiveRoundSnapshot(activeUserTickets, serverTakenTickets, {
+        name: player.name,
+        phone: player.phone,
+      });
+
+      // Periodic poll from server for cross-device updates
+      if (Date.now() % 2000 < 550) {
+        fetchServerRoomState(snap.roundId);
+      }
 
       // A. New Round Rollover (Epoch boundary reached)
       if (snap.roundId !== currentRoundId) {
         setCurrentRoundId(snap.roundId);
         setConfirmedTickets([]);
         setPendingTickets([]);
+        setServerTakenTickets([]);
         setWon(false);
         setWinners([]);
         setIsGameStarted(false);
@@ -258,6 +286,7 @@ export function App() {
         setTakenTickets(snap.takenTickets);
         setLiveJackpot(snap.jackpot);
         setTotalRoomTickets(snap.totalRoomTickets);
+        setWaitingForPlayers(snap.waitingForPlayers);
         lastDrawnCountRef.current = 0;
         clearOldRoundTickets(snap.roundId);
         return;
@@ -268,6 +297,7 @@ export function App() {
       setTakenTickets(snap.takenTickets);
       setLiveJackpot(snap.jackpot);
       setTotalRoomTickets(snap.totalRoomTickets);
+      setWaitingForPlayers(snap.waitingForPlayers);
 
       // C. Sync Phases
       if (snap.phase === "lobby") {
@@ -301,8 +331,11 @@ export function App() {
       }
     }, 500);
 
-    return () => clearInterval(syncInterval);
-  }, [currentRoundId, confirmedTickets, pendingTickets]);
+    return () => {
+      clearInterval(syncInterval);
+      unsubscribe();
+    };
+  }, [currentRoundId, confirmedTickets, pendingTickets, serverTakenTickets]);
 
   // 2. Initialize ticket boards whenever active tickets change
   useEffect(() => {
@@ -363,23 +396,43 @@ export function App() {
     }
 
     // Room Winner when victory phase is reached (shown to everyone so it feels live and real!)
-    const snap = getLiveRoundSnapshot(activeTickets);
-    if (snap.phase === "victory" && !won && snap.totalRoomTickets > 0) {
+    const player = getStoredPlayer();
+    const snap = getLiveRoundSnapshot(activeTickets, serverTakenTickets, {
+      name: player.name,
+      phone: player.phone,
+    });
+    if (snap.phase === "victory" && !won && snap.totalRoomTickets >= 2) {
       buzz([15, 40, 20]);
-      const bot = snap.winnerInfo;
+      const winner = snap.winnerInfo;
+      const isUserWin = winner.isUser;
+      if (isUserWin) {
+        const payoutKey = `phoenix_payout_claimed_round_${currentRoundId}`;
+        if (!localStorage.getItem(payoutKey)) {
+          localStorage.setItem(payoutKey, "true");
+          buzz([20, 50, 20, 50, 40]);
+          setMainWallet((prev) => prev + liveJackpot);
+          player.totalWon = (player.totalWon || 0) + liveJackpot;
+          player.gamesPlayed = (player.gamesPlayed || 0) + 1;
+          saveStoredPlayer(player);
+        }
+      }
       setWinners([
         {
-          name: bot.name,
-          phone: bot.phone,
-          ticket: bot.ticket,
+          name: isUserWin ? `${player.name} (እርስዎ)` : winner.name,
+          phone: isUserWin
+            ? player.phone
+              ? player.phone.slice(0, 4) + "***" + player.phone.slice(-2)
+              : "09***38"
+            : winner.phone,
+          ticket: winner.ticket,
           amount: liveJackpot,
-          isUser: false,
+          isUser: isUserWin,
         },
       ]);
       playBingoFanfare();
       setWon(true);
     }
-  }, [drawn, ticketsData, activeTickets, won, isGameStarted, liveJackpot, currentRoundId]);
+  }, [drawn, ticketsData, activeTickets, won, isGameStarted, liveJackpot, currentRoundId, serverTakenTickets]);
 
   const toggleCell = (ticketNum: number, cellId: string) => {
     setTicketsData((prev) => {
@@ -416,12 +469,14 @@ export function App() {
   const handleToggleTicket = (ticketNum: number) => {
     if (isGameStarted) return;
     buzz(10);
+    const player = getStoredPlayer();
 
     // If already selected: Refund 10 ETB back to Play Wallet
     if (pendingTickets.includes(ticketNum)) {
       const nextPending = pendingTickets.filter((x) => x !== ticketNum);
       setPendingTickets(nextPending);
       saveUserRoundTickets(currentRoundId, nextPending);
+      releaseRemoteTicket(currentRoundId, ticketNum);
       setPlayWallet((prev) => prev + STAKE_PER_TICKET);
       return;
     }
@@ -458,6 +513,7 @@ export function App() {
     const nextPending = [...pendingTickets, ticketNum];
     setPendingTickets(nextPending);
     saveUserRoundTickets(currentRoundId, nextPending);
+    claimRemoteTicket(currentRoundId, ticketNum, player.name, player.phone);
   };
 
   // Claim Floating Bonus
@@ -597,6 +653,7 @@ export function App() {
             playWallet={playWallet}
             globalCountdown={globalCountdown}
             isGameStarted={isGameStarted}
+            waitingForPlayers={waitingForPlayers}
             onStartGame={handleManualStart}
             onNavigateWallet={() => setActiveTab("wallet")}
             announcementText={announcementText}
