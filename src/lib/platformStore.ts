@@ -1,5 +1,11 @@
 /**
  * Phoenix Bingo - Unified Platform Store & Telegram Integration
+ * 
+ * Manages:
+ * 1. Automatic Telegram Login (Zero Password Friction for Players)
+ * 2. Real-time Deposit & Withdrawal sync between Players & Admin
+ * 3. Fresh Clean-Slate Finance Engine starting from ZERO (0 ETB)
+ * 4. Direct Telegram Bot Dispatch for Deposit alerts, Approvals, & Broadcasts
  */
 
 export interface PlayerProfile {
@@ -59,16 +65,19 @@ export interface RegisteredUser {
   lastActive: string;
 }
 
+// Telegram Bot credentials
 export const TELEGRAM_BOT_TOKEN = "8606075616:AAEFVgE-_lIz33iYUBB6fzcWYPwXOm4f72g";
 export const TELEGRAM_BOT_API = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}`;
 export const DEFAULT_ADMIN_USERNAME = "@Phonix_s";
 
+// --- Telegram WebApp Helper ---
 export function getTelegramWebAppUser() {
   if (typeof window === "undefined") return null;
   const tg = (window as unknown as { Telegram?: { WebApp?: { initDataUnsafe?: { user?: { id: number; first_name?: string; last_name?: string; username?: string; photo_url?: string } } } } }).Telegram?.WebApp;
   return tg?.initDataUnsafe?.user || null;
 }
 
+// Expand Telegram WebApp on launch
 if (typeof window !== "undefined") {
   try {
     const tg = (window as unknown as { Telegram?: { WebApp?: { ready: () => void; expand: () => void } } }).Telegram?.WebApp;
@@ -79,6 +88,7 @@ if (typeof window !== "undefined") {
   } catch {}
 }
 
+// --- Player Profile Store ---
 const STORAGE_KEY_PLAYER = "phoenix_active_player";
 const STORAGE_KEY_TXS = "phoenix_platform_transactions";
 const STORAGE_KEY_FINANCE = "phoenix_finance_metrics_v2";
@@ -87,13 +97,35 @@ const STORAGE_KEY_BROADCAST = "phoenix_live_broadcast";
 
 export function getStoredPlayer(): PlayerProfile {
   const tgUser = getTelegramWebAppUser();
+  
+  // Read parameters from search or hash (e.g. ?tgId=...&phone=...&name=...&bonus=...&balance=...)
+  let urlParams: URLSearchParams | null = null;
+  if (typeof window !== "undefined") {
+    urlParams = new URLSearchParams(window.location.search);
+    if (window.location.hash && window.location.hash.includes("?")) {
+      const hashQuery = window.location.hash.split("?")[1];
+      const hashParams = new URLSearchParams(hashQuery);
+      hashParams.forEach((v, k) => {
+        if (!urlParams!.has(k)) urlParams!.set(k, v);
+      });
+    }
+  }
+
   let baseProfile: PlayerProfile;
 
   try {
     const saved = localStorage.getItem(STORAGE_KEY_PLAYER);
     if (saved) {
       baseProfile = JSON.parse(saved);
+      // Ensure defaults if missing or corrupted
+      if (typeof baseProfile.mainWallet !== "number" || isNaN(baseProfile.mainWallet)) {
+        baseProfile.mainWallet = 0.0;
+      }
+      if (typeof baseProfile.playWallet !== "number" || isNaN(baseProfile.playWallet)) {
+        baseProfile.playWallet = 15.0; // 15 ETB Play Bonus
+      }
     } else {
+      // Start completely FRESH with 15.00 ETB Play Bonus and 0.00 ETB Main Wallet
       baseProfile = {
         id: tgUser ? `tg-${tgUser.id}` : `PX-${Math.floor(1000 + Math.random() * 9000)}`,
         telegramId: tgUser?.id,
@@ -103,8 +135,8 @@ export function getStoredPlayer(): PlayerProfile {
         photoUrl: tgUser?.photo_url,
         isVerified: !!tgUser,
         isAutoLoggedIn: !!tgUser,
-        mainWallet: 0.0,
-        playWallet: 15.0,
+        mainWallet: 0.0, // 0.00 ETB Main Wallet (Withdrawable)
+        playWallet: 15.0, // 15.00 ETB Play Wallet (Initial Bonus)
         gamesPlayed: 0,
         totalWon: 0,
         joinedAt: new Date().toLocaleDateString("en-US", { month: "short", day: "numeric" }),
@@ -118,13 +150,42 @@ export function getStoredPlayer(): PlayerProfile {
       isVerified: false,
       isAutoLoggedIn: false,
       mainWallet: 0.0,
-      playWallet: 0.0,
+      playWallet: 15.0, // 15.00 ETB Play Wallet
       gamesPlayed: 0,
       totalWon: 0,
       joinedAt: "Today",
     };
   }
 
+  // URL override/sync from Telegram Bot link
+  if (urlParams) {
+    const qTgId = urlParams.get("tgId");
+    if (qTgId) {
+      baseProfile.telegramId = Number(qTgId);
+      baseProfile.id = `tg-${qTgId}`;
+      baseProfile.isAutoLoggedIn = true;
+      baseProfile.isVerified = true;
+    }
+    const qPhone = urlParams.get("phone");
+    if (qPhone && qPhone.trim()) {
+      baseProfile.phone = decodeURIComponent(qPhone).trim();
+      baseProfile.isVerified = true;
+    }
+    const qName = urlParams.get("name");
+    if (qName && qName.trim()) {
+      baseProfile.name = decodeURIComponent(qName).trim();
+    }
+    const qBonus = urlParams.get("bonus");
+    if (qBonus && !isNaN(parseFloat(qBonus))) {
+      baseProfile.playWallet = parseFloat(qBonus);
+    }
+    const qBalance = urlParams.get("balance");
+    if (qBalance && !isNaN(parseFloat(qBalance))) {
+      baseProfile.mainWallet = parseFloat(qBalance);
+    }
+  }
+
+  // If user opened inside Telegram, automatically update/sync their Telegram Identity
   if (tgUser) {
     baseProfile.telegramId = tgUser.id;
     baseProfile.isAutoLoggedIn = true;
@@ -142,6 +203,7 @@ export function getStoredPlayer(): PlayerProfile {
 
   return baseProfile;
 }
+
 export function getStoredWalletBalances(): { mainWallet: number; playWallet: number } {
   const player = getStoredPlayer();
   return {
@@ -159,20 +221,24 @@ export function saveStoredWalletBalances(mainWallet: number, playWallet: number)
     window.dispatchEvent(new CustomEvent("phoenix_wallet_updated", { detail: { mainWallet, playWallet } }));
   } catch {}
 }
+
 export function saveStoredPlayer(player: PlayerProfile) {
   try {
     localStorage.setItem(STORAGE_KEY_PLAYER, JSON.stringify(player));
+    // Also sync with registered users list for Admin View
     syncPlayerToUsersDirectory(player);
     window.dispatchEvent(new CustomEvent("phoenix_player_updated", { detail: player }));
   } catch {}
 }
 
+// --- Registered Users Store for Admin ---
 export function getRegisteredUsers(): RegisteredUser[] {
   try {
     const raw = localStorage.getItem(STORAGE_KEY_USERS);
     if (raw) return JSON.parse(raw);
   } catch {}
   
+  // Clean initial: register current player
   const current = getStoredPlayer();
   const initial = [
     {
@@ -236,12 +302,13 @@ function syncPlayerToUsersDirectory(player: PlayerProfile) {
   } catch {}
 }
 
+// --- Transactions Store (Starts Clean: 0 pending old items) ---
 export function getStoredTransactions(): PlatformTx[] {
   try {
     const raw = localStorage.getItem(STORAGE_KEY_TXS);
     if (raw) return JSON.parse(raw);
   } catch {}
-  return [];
+  return []; // Clean empty start!
 }
 
 export function saveStoredTransactions(txs: PlatformTx[]) {
@@ -251,6 +318,7 @@ export function saveStoredTransactions(txs: PlatformTx[]) {
   } catch {}
 }
 
+// --- Player Deposit Request ---
 export async function submitPlayerDeposit(params: {
   amount: number;
   bank: string;
@@ -281,6 +349,7 @@ export async function submitPlayerDeposit(params: {
   const updated = [newTx, ...txs];
   saveStoredTransactions(updated);
 
+  // Send Telegram notification to Admin!
   const alertText = 
 `🔔 <b>አዲስ የገቢ (Deposit) ጥያቄ ደርሷል!</b>
 
@@ -294,9 +363,11 @@ export async function submitPlayerDeposit(params: {
 👉 አድሚን ዳሽቦርድ ላይ ማጽደቅ ወይም መሰረዝ ይችላሉ!`;
 
   sendTelegramAlert(alertText).catch(() => {});
+
   return newTx;
 }
 
+// --- Player Withdrawal Request ---
 export async function submitPlayerWithdrawal(params: {
   amount: number;
   bank: string;
@@ -308,6 +379,7 @@ export async function submitPlayerWithdrawal(params: {
     return { success: false, message: "በቂ ቀሪ ሂሳብ የለም!" };
   }
 
+  // Deduct from player's balance immediately to hold funds safely
   player.mainWallet = Math.max(0, player.mainWallet - params.amount);
   saveStoredPlayer(player);
 
@@ -331,6 +403,7 @@ export async function submitPlayerWithdrawal(params: {
   const txs = getStoredTransactions();
   saveStoredTransactions([newTx, ...txs]);
 
+  // Send Telegram notification to Admin!
   const alertText = 
 `📤 <b>አዲስ የወጪ (Withdrawal) ጥያቄ ደርሷል!</b>
 
@@ -342,9 +415,11 @@ export async function submitPlayerWithdrawal(params: {
 👉 አድሚን ዳሽቦርድ ላይ ያረጋግጡ!`;
 
   sendTelegramAlert(alertText).catch(() => {});
+
   return { success: true, tx: newTx };
 }
 
+// --- Admin Approves Transaction ---
 export function approvePlatformTransaction(txId: string): boolean {
   const txs = getStoredTransactions();
   const tx = txs.find((t) => t.id === txId);
@@ -353,17 +428,22 @@ export function approvePlatformTransaction(txId: string): boolean {
   tx.status = "Approved";
   saveStoredTransactions([...txs]);
 
+  // Update Finance
   const finance = getStoredFinanceMetrics();
   if (tx.type === "deposit") {
     finance.totalDeposits += Math.abs(tx.amount);
+    
+    // Credit player if it's the current player
     const player = getStoredPlayer();
     if (player.id === tx.playerId) {
       player.mainWallet += Math.abs(tx.amount);
+      // Optional 20% bonus for 100+ ETB
       if (Math.abs(tx.amount) >= 100) {
         player.playWallet += Math.abs(tx.amount) * 0.2;
       }
       saveStoredPlayer(player);
     } else {
+      // Update registered users table
       const users = getRegisteredUsers();
       const u = users.find((x) => x.id === tx.playerId);
       if (u) {
@@ -373,10 +453,12 @@ export function approvePlatformTransaction(txId: string): boolean {
       }
     }
   } else {
+    // Withdrawal approved
     finance.totalWithdrawals += Math.abs(tx.amount);
   }
   saveStoredFinanceMetrics(finance);
 
+  // Send Telegram confirmation notification
   const confirmText = 
 `✅ <b>የግብይት ማረጋገጫ (Transaction Approved)</b>
 
@@ -389,6 +471,7 @@ export function approvePlatformTransaction(txId: string): boolean {
   return true;
 }
 
+// --- Admin Rejects Transaction ---
 export function rejectPlatformTransaction(txId: string): boolean {
   const txs = getStoredTransactions();
   const tx = txs.find((t) => t.id === txId);
@@ -397,6 +480,7 @@ export function rejectPlatformTransaction(txId: string): boolean {
   tx.status = "Rejected";
   saveStoredTransactions([...txs]);
 
+  // If withdrawal was rejected, refund the held money back to player
   if (tx.type === "withdraw") {
     const refundAmt = Math.abs(tx.amount);
     const player = getStoredPlayer();
@@ -412,9 +496,11 @@ export function rejectPlatformTransaction(txId: string): boolean {
       }
     }
   }
+
   return true;
 }
 
+// --- Finance Metrics Store (Starts at ZERO) ---
 const DEFAULT_FINANCE: FinanceMetrics = {
   historicalTurnover: 0.0,
   historicalWinningsPaid: 0.0,
@@ -446,8 +532,10 @@ export function resetFinanceToZero() {
   saveStoredFinanceMetrics(DEFAULT_FINANCE);
 }
 
+// --- Telegram Direct Dispatcher ---
 export async function sendTelegramAlert(messageText: string, customChatId?: string): Promise<{ success: boolean; error?: string }> {
   try {
+    // If customChatId is not provided, try to send to admin channel or saved chat id
     const targetChat = customChatId || localStorage.getItem("phoenix_admin_chat_id") || DEFAULT_ADMIN_USERNAME;
 
     const res = await fetch(`${TELEGRAM_BOT_API}/sendMessage`, {
@@ -461,13 +549,20 @@ export async function sendTelegramAlert(messageText: string, customChatId?: stri
     });
 
     const data = await res.json();
-    return { success: !!data.ok, error: data.description };
+    if (data.ok) {
+      return { success: true };
+    } else {
+      console.warn("Telegram API response:", data);
+      return { success: false, error: data.description || "Failed" };
+    }
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
+    console.error("Error sending Telegram alert:", msg);
     return { success: false, error: msg };
   }
 }
 
+// --- Live Broadcast Store & Dispatcher ---
 export function getStoredBroadcast(): string {
   try {
     return localStorage.getItem(STORAGE_KEY_BROADCAST) || "⚡ Instant Telebirr, CBE & M-Pesa Payouts • የቀጥታ ጃክፖት ሽልማት ክፍያ Live";
@@ -477,6 +572,7 @@ export function getStoredBroadcast(): string {
 }
 
 export async function broadcastMessage(text: string, target: "all" | "telegram" | "web" = "all"): Promise<{ success: boolean; telegramStatus?: string }> {
+  // 1. Update web announcement bar
   if (target === "all" || target === "web") {
     try {
       localStorage.setItem(STORAGE_KEY_BROADCAST, text);
@@ -484,6 +580,7 @@ export async function broadcastMessage(text: string, target: "all" | "telegram" 
     } catch {}
   }
 
+  // 2. Dispatch to Telegram
   let telegramStatus = "Skipped";
   if (target === "all" || target === "telegram") {
     const tgMsg = `📢 <b>የፊኒክስ ቢንጎ የቀጥታ ማስታወቂያ (Official Announcement)</b>\n\n${text}\n\n🎮 <b>አሁኑኑ ይጫወቱ:</b> https://phoenix-bingo.onrender.com`;
