@@ -46,7 +46,15 @@ const BOT_NAMES = [
 ];
 
 export function App() {
-  const [activeTab, setActiveTab] = useState<NavTab>("home");
+  const [activeTab, setActiveTab] = useState<NavTab>(() => {
+    if (typeof window !== "undefined") {
+      const hash = window.location.hash.replace("#", "").split("?")[0].toLowerCase();
+      if (["home", "wallet", "rules", "history", "profile", "admin", "finance", "rank"].includes(hash)) {
+        return hash as NavTab;
+      }
+    }
+    return "home";
+  });
   const [pendingTickets, setPendingTickets] = useState<number[]>([]);
   const [confirmedTickets, setConfirmedTickets] = useState<number[]>([]);
   const [takenTickets, setTakenTickets] = useState<number[]>([]);
