@@ -1,5 +1,5 @@
 import { useMemo } from "react";
-import { CheckCircle2 } from "lucide-react";
+import { CheckCircle2, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 export function TicketGrid({
@@ -43,7 +43,9 @@ export function TicketGrid({
                 aria-label={`ካርቴላ ${n}`}
                 className={cn(
                   "relative flex aspect-square flex-col items-center justify-center rounded-lg border text-[10px] sm:text-xs font-black tabular-nums transition-transform active:scale-85 select-none touch-manipulation",
-                  isTaken || disabled
+                  isTaken
+                    ? "border-rose-900/50 bg-rose-950/30 text-rose-400/40 line-through backdrop-blur-xs cursor-not-allowed shadow-inner"
+                    : disabled
                     ? "border-transparent bg-secondary/15 text-muted-foreground/30 line-through cursor-not-allowed"
                     : isSelected
                     ? "border-gold bg-gradient-to-br from-amber-400 via-gold to-amber-500 text-black shadow-glow-gold font-black scale-105 z-10 ring-2 ring-gold/70"
@@ -53,6 +55,11 @@ export function TicketGrid({
                 <span>{n}</span>
                 {isSelected && (
                   <CheckCircle2 className="absolute -top-1 -right-1 h-3 w-3 text-emerald-400 fill-black stroke-[3] rounded-full" />
+                )}
+                {isTaken && (
+                  <span className="absolute -top-1 -right-1 flex h-3 w-3 items-center justify-center rounded-full bg-rose-600/90 text-[8px] font-black text-white shadow-xs">
+                    <X className="h-2 w-2 stroke-[3.5]" />
+                  </span>
                 )}
               </button>
             );
