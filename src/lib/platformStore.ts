@@ -113,10 +113,13 @@ export function getStoredPlayer(): PlayerProfile {
 
   let baseProfile: PlayerProfile;
 
+  let hasSavedProfile = false;
+
   try {
     const saved = localStorage.getItem(STORAGE_KEY_PLAYER);
     if (saved) {
       baseProfile = JSON.parse(saved);
+      hasSavedProfile = true;
       // Ensure defaults if missing or corrupted
       if (typeof baseProfile.mainWallet !== "number" || isNaN(baseProfile.mainWallet)) {
         baseProfile.mainWallet = 0.0;
@@ -165,6 +168,9 @@ export function getStoredPlayer(): PlayerProfile {
   if (urlParams) {
     const qTgId = urlParams.get("tgId");
     if (qTgId) {
+      if (baseProfile.telegramId && String(baseProfile.telegramId) !== String(qTgId)) {
+        hasSavedProfile = false;
+      }
       baseProfile.telegramId = Number(qTgId);
       baseProfile.id = `tg-${qTgId}`;
       baseProfile.isAutoLoggedIn = true;
@@ -179,13 +185,27 @@ export function getStoredPlayer(): PlayerProfile {
     if (qName && qName.trim()) {
       baseProfile.name = decodeURIComponent(qName).trim();
     }
-    const qBonus = urlParams.get("bonus");
-    if (qBonus && !isNaN(parseFloat(qBonus))) {
-      baseProfile.playWallet = parseFloat(qBonus);
+    // CRITICAL FIX: Only read initial bonus & balance from URL query if user is NEW (!hasSavedProfile).
+    // If user already exists and refreshes the page, preserve their live wallet balances!
+    if (!hasSavedProfile) {
+      const qBonus = urlParams.get("bonus");
+      if (qBonus && !isNaN(parseFloat(qBonus))) {
+        baseProfile.playWallet = parseFloat(qBonus);
+      }
+      const qBalance = urlParams.get("balance");
+      if (qBalance && !isNaN(parseFloat(qBalance))) {
+        baseProfile.mainWallet = parseFloat(qBalance);
+      }
     }
-    const qBalance = urlParams.get("balance");
-    if (qBalance && !isNaN(parseFloat(qBalance))) {
-      baseProfile.mainWallet = parseFloat(qBalance);
+
+    // Clean up one-time query parameters from browser URL without reloading so refresh stays clean
+    if (typeof window !== "undefined" && window.history && (urlParams.has("bonus") || urlParams.has("balance"))) {
+      try {
+        const cleanUrl = new URL(window.location.href);
+        cleanUrl.searchParams.delete("bonus");
+        cleanUrl.searchParams.delete("balance");
+        window.history.replaceState({}, document.title, cleanUrl.toString());
+      } catch {}
     }
   }
 
