@@ -1,3 +1,5 @@
+import { getStoredBotSettings } from "./botConfig";
+
 /**
  * Phoenix Bingo - Universal Live Room Synchronization Engine
  * 
@@ -6,6 +8,11 @@
  * 2. Automatic server-time calibration to eliminate phone clock differences
  * 3. Exact state persistence across page reloads/refreshes - no resetting or jumping
  * 4. Structured cycle: Lobby (35s) -> Dynamic Ball Calling (50s) -> Victory (3s) -> Next Round
+ * 5. Dynamic Bot integration:
+ *    - If bots are OFF: 0 bot tickets!
+ *    - If NO ONE took any cartelas: NO BALLS CALLED! Round resets/waits ("hulum sew kalyeza mnm sayitara yalfal").
+ *    - If tickets ARE taken (by player or bots): Game begins and balls are called!
+ *    - No phantom 700/800 ETB jackpot! Jackpot is strictly: total tickets * 10 ETB.
  */
 
 export const LOBBY_MS = 35_000;         // 35 seconds betting/cartela selection
@@ -120,31 +127,68 @@ export function getDeterministicBallsForRound(roundId: number): number[] {
 
 /**
  * Deterministic room metadata (taken tickets, winner bot, jackpot)
+ * If bot system is disabled, takenTickets is strictly empty.
+ * If bot system is enabled, bots join progressively during the 35s lobby.
  */
-export function getDeterministicRoomData(roundId: number, winningBallCount: number) {
+export function getDeterministicRoomData(
+  roundId: number,
+  winningBallCount: number,
+  elapsedInRound: number = 0
+) {
+  const botSettings = getStoredBotSettings();
+
+  // If Bot system is OFF: 0 bot tickets! Only real players count.
+  if (!botSettings.isBotSystemActive) {
+    return {
+      takenTickets: [],
+      winnerName: "",
+      winnerPhone: "",
+      winnerTicket: 0,
+      winningBallCount,
+      jackpot: 0,
+    };
+  }
+
   const rand = createSeededPRNG(roundId * 433494437);
-  
-  // Base room tickets between 55 and 85 tickets
-  const totalCount = 55 + Math.floor(rand() * 30);
+  const min = Math.max(0, botSettings.minBots || 0);
+  const max = Math.max(min, botSettings.maxBots || 25);
+  const totalTargetBots = min === max ? min : min + Math.floor(rand() * (max - min + 1));
+
+  if (totalTargetBots === 0) {
+    return {
+      takenTickets: [],
+      winnerName: "",
+      winnerPhone: "",
+      winnerTicket: 0,
+      winningBallCount,
+      jackpot: 0,
+    };
+  }
+
+  // During 35s lobby, bots join gradually so players see them taking cards in real time!
+  const progress = elapsedInRound < LOBBY_MS ? Math.min(1, Math.max(0.1, elapsedInRound / (LOBBY_MS * 0.9))) : 1;
+  const currentBotCount = Math.floor(totalTargetBots * progress);
+
   const takenSet = new Set<number>();
-  while (takenSet.size < totalCount) {
+  while (takenSet.size < totalTargetBots) {
     const t = Math.floor(rand() * 550) + 1;
     takenSet.add(t);
   }
-  const takenTickets = Array.from(takenSet);
+  const allBotTickets = Array.from(takenSet);
+  const visibleBotTickets = allBotTickets.slice(0, currentBotCount);
 
   const nameIdx = Math.floor(rand() * BOT_NAMES.length);
   const winnerName = BOT_NAMES[nameIdx] || "አበበ ተፈራ";
   const winnerPhone = `09${Math.floor(10 + rand() * 80)}***${Math.floor(10 + rand() * 89)}`;
-  const winnerTicket = takenTickets[Math.floor(rand() * takenTickets.length)] || 112;
+  const winnerTicket = allBotTickets[Math.floor(rand() * allBotTickets.length)] || 112;
 
   return {
-    takenTickets,
+    takenTickets: visibleBotTickets,
     winnerName,
     winnerPhone,
     winnerTicket,
     winningBallCount,
-    jackpot: totalCount * 10,
+    jackpot: visibleBotTickets.length * 10,
   };
 }
 
@@ -155,8 +199,41 @@ export function getLiveRoundSnapshot(userTickets: number[] = []): LiveRoundSnaps
   const now = getSynchronizedNow();
   const { roundId, elapsedInRound, winningBallCount, callingMs } = getCurrentRoundInfo(now);
 
-  const roomData = getDeterministicRoomData(roundId, winningBallCount);
+  const roomData = getDeterministicRoomData(roundId, winningBallCount, elapsedInRound);
   const fullBallsSequence = getDeterministicBallsForRound(roundId);
+
+  // Combine user tickets + active bot tickets
+  const takenTickets = roomData.takenTickets.filter((t) => !userTickets.includes(t));
+  const totalRoomTickets = takenTickets.length + userTickets.length;
+  const jackpot = totalRoomTickets * 10;
+
+  // RULE: "hulum sew kalyeza mnm sayitara yalfal, keyeze gn yitaral"
+  // If NO ONE (neither real player nor active bot) took any tickets:
+  // - No balls are called!
+  // - No phantom 700/800 jackpot!
+  // - No victory celebration popup!
+  // - Round remains in lobby waiting for players!
+  if (totalRoomTickets === 0) {
+    const countdown = Math.max(0, Math.ceil((LOBBY_MS - (elapsedInRound % LOBBY_MS)) / 1000));
+    return {
+      roundId,
+      phase: "lobby",
+      countdown,
+      elapsedInRound,
+      isGameStarted: false,
+      drawnBalls: [],
+      currentBall: null,
+      winningBallCount,
+      winnerInfo: {
+        name: "",
+        phone: "",
+        ticket: 0,
+      },
+      totalRoomTickets: 0,
+      takenTickets: [],
+      jackpot: 0,
+    };
+  }
 
   let phase: "lobby" | "game" | "victory" = "lobby";
   let countdown = 0;
@@ -172,7 +249,7 @@ export function getLiveRoundSnapshot(userTickets: number[] = []): LiveRoundSnaps
     drawnBalls = [];
     currentBall = null;
   } else if (elapsedInRound < LOBBY_MS + callingMs) {
-    // 2. Live Calling Phase (Unpredictable finish at winningBallCount)
+    // 2. Live Calling Phase (At least 1 ticket was taken)
     const gameElapsed = elapsedInRound - LOBBY_MS;
     const count = Math.min(
       winningBallCount,
@@ -195,11 +272,6 @@ export function getLiveRoundSnapshot(userTickets: number[] = []): LiveRoundSnaps
     currentBall = drawnBalls[0] || null;
   }
 
-  // Filter user's chosen tickets out of takenTickets so they don't conflict
-  const takenTickets = roomData.takenTickets.filter((t) => !userTickets.includes(t));
-  const totalRoomTickets = takenTickets.length + userTickets.length;
-  const jackpot = totalRoomTickets * 10;
-
   return {
     roundId,
     phase,
@@ -210,9 +282,9 @@ export function getLiveRoundSnapshot(userTickets: number[] = []): LiveRoundSnaps
     currentBall,
     winningBallCount,
     winnerInfo: {
-      name: roomData.winnerName,
-      phone: roomData.winnerPhone,
-      ticket: roomData.winnerTicket,
+      name: roomData.winnerName || "አሸናፊ",
+      phone: roomData.winnerPhone || "09********",
+      ticket: roomData.winnerTicket || 1,
     },
     totalRoomTickets,
     takenTickets,
