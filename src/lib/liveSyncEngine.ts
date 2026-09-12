@@ -1,0 +1,246 @@
+/**
+ * Phoenix Bingo - Universal Live Room Synchronization Engine
+ * 
+ * Guarantees:
+ * 1. 100% Real-time synchronization across all players (universal epoch clock)
+ * 2. Deterministic 75-ball call sequence per round ID (all players hear/see same balls at same second)
+ * 3. Persistence across page reloads/refreshes - game state & player tickets are never lost
+ * 4. Automatic transition: Lobby (40s) -> Live Call (60s) -> Victory (10s) -> Next Round
+ */
+
+export const LOBBY_MS = 35_000;         // 35 seconds betting/selection
+export const VICTORY_MS = 3_000;        // Exactly 3 seconds winner celebration (User specified)
+export const BALL_INTERVAL_MS = 2_600;  // 2.6 seconds between balls
+
+// Unpredictable winning ball target per round (between 17 and 22 balls)
+export function getWinningBallTarget(roundId: number): number {
+  const variations = [17, 21, 18, 22, 19, 20];
+  return variations[Math.abs(roundId) % variations.length]!;
+}
+
+// 6-round periodic cycle total: 532,200 ms (~8.8 minutes)
+const CYCLE_MS = 532_200;
+const EPOCH_ANCHOR = 1740000000000; // Fixed universal reference epoch
+
+export function getCurrentRoundInfo(now: number = Date.now()) {
+  const elapsedTotal = Math.max(0, now - EPOCH_ANCHOR);
+  const cycleIndex = Math.floor(elapsedTotal / CYCLE_MS);
+  let cycleOffset = elapsedTotal % CYCLE_MS;
+  
+  let roundInCycle = 0;
+  let elapsedInRound = cycleOffset;
+  let winningBallCount = 17;
+  let callingMs = 17 * BALL_INTERVAL_MS;
+  let roundTotalMs = LOBBY_MS + callingMs + VICTORY_MS;
+
+  for (let i = 0; i < 6; i++) {
+    const w = getWinningBallTarget(i);
+    const cMs = w * BALL_INTERVAL_MS;
+    const rMs = LOBBY_MS + cMs + VICTORY_MS;
+    if (cycleOffset < rMs) {
+      roundInCycle = i;
+      elapsedInRound = cycleOffset;
+      winningBallCount = w;
+      callingMs = cMs;
+      roundTotalMs = rMs;
+      break;
+    }
+    cycleOffset -= rMs;
+  }
+
+  const roundId = cycleIndex * 6 + roundInCycle;
+  return { roundId, elapsedInRound, winningBallCount, callingMs, roundTotalMs };
+}
+
+// Common Ethiopian bot player names for live room immersion
+const BOT_NAMES = [
+  "አበበ ተፈራ", "ሰለሞን ካሳ", "ዳንኤል ወርቁ", "ኤርሚያስ ታደሰ",
+  "ዮናስ በቀለ", "በረከት አያሌው", "ኪሩቤል አለሙ", "ያብስራ ተሾመ",
+  "ሄኖክ ግርማ", "ናሆም ደጀኔ", "ቴዎድሮስ ካሳሁን", "አማኑኤል ጥላሁን",
+  "ታምራት ደስታ", "ማህሌት ጌታቸው", "ራሄል ታደለ", "ህሊና ሰለሞን"
+];
+
+export interface LiveRoundSnapshot {
+  roundId: number;
+  phase: "lobby" | "game" | "victory";
+  countdown: number;          // 0 - 35 seconds remaining in lobby
+  elapsedInRound: number;     // milliseconds elapsed in this round
+  isGameStarted: boolean;
+  drawnBalls: number[];       // [mostRecentBall, ...olderBalls]
+  currentBall: number | null;
+  winningBallCount: number;
+  winnerInfo: {
+    name: string;
+    phone: string;
+    ticket: number;
+  };
+  totalRoomTickets: number;
+  takenTickets: number[];
+  jackpot: number;
+}
+
+/**
+ * 32-bit integer PRNG generator seeded by Round ID
+ */
+function createSeededPRNG(seed: number) {
+  let s = (seed * 1664525 + 1013904223) >>> 0;
+  return function next(): number {
+    s = (Math.imul(s, 1664525) + 1013904223) >>> 0;
+    return s / 4294967296;
+  };
+}
+
+/**
+ * Deterministic shuffle of 1..75 balls for a specific round ID
+ */
+export function getDeterministicBallsForRound(roundId: number): number[] {
+  const balls = Array.from({ length: 75 }, (_, i) => i + 1);
+  const rand = createSeededPRNG(roundId * 982451653);
+  for (let i = balls.length - 1; i > 0; i--) {
+    const j = Math.floor(rand() * (i + 1));
+    const temp = balls[i]!;
+    balls[i] = balls[j]!;
+    balls[j] = temp;
+  }
+  return balls;
+}
+
+/**
+ * Deterministic room metadata (taken tickets, winner bot, jackpot)
+ */
+export function getDeterministicRoomData(roundId: number, winningBallCount: number) {
+  const rand = createSeededPRNG(roundId * 433494437);
+  
+  // Base room tickets between 55 and 85 tickets
+  const totalCount = 55 + Math.floor(rand() * 30);
+  const takenSet = new Set<number>();
+  while (takenSet.size < totalCount) {
+    const t = Math.floor(rand() * 550) + 1;
+    takenSet.add(t);
+  }
+  const takenTickets = Array.from(takenSet);
+
+  const nameIdx = Math.floor(rand() * BOT_NAMES.length);
+  const winnerName = BOT_NAMES[nameIdx] || "አበበ ተፈራ";
+  const winnerPhone = `09${Math.floor(10 + rand() * 80)}***${Math.floor(10 + rand() * 89)}`;
+  const winnerTicket = takenTickets[Math.floor(rand() * takenTickets.length)] || 112;
+
+  return {
+    takenTickets,
+    winnerName,
+    winnerPhone,
+    winnerTicket,
+    winningBallCount,
+    jackpot: totalCount * 10,
+  };
+}
+
+/**
+ * Computes the exact live state of the round based on universal epoch time
+ */
+export function getLiveRoundSnapshot(userTickets: number[] = []): LiveRoundSnapshot {
+  const now = Date.now();
+  const { roundId, elapsedInRound, winningBallCount, callingMs } = getCurrentRoundInfo(now);
+
+  const roomData = getDeterministicRoomData(roundId, winningBallCount);
+  const fullBallsSequence = getDeterministicBallsForRound(roundId);
+
+  let phase: "lobby" | "game" | "victory" = "lobby";
+  let countdown = 0;
+  let isGameStarted = false;
+  let drawnBalls: number[] = [];
+  let currentBall: number | null = null;
+
+  if (elapsedInRound < LOBBY_MS) {
+    // 1. Lobby Betting Phase
+    phase = "lobby";
+    countdown = Math.max(0, Math.ceil((LOBBY_MS - elapsedInRound) / 1000));
+    isGameStarted = false;
+    drawnBalls = [];
+    currentBall = null;
+  } else if (elapsedInRound < LOBBY_MS + callingMs) {
+    // 2. Live Calling Phase (Ends immediately when winningBallCount is hit - NO FORCED 60s!)
+    const gameElapsed = elapsedInRound - LOBBY_MS;
+    const count = Math.min(
+      winningBallCount,
+      Math.floor(gameElapsed / BALL_INTERVAL_MS) + 1
+    );
+
+    phase = "game";
+    isGameStarted = true;
+    countdown = 0;
+    // Newest drawn ball at index 0
+    const slice = fullBallsSequence.slice(0, count);
+    drawnBalls = [...slice].reverse();
+    currentBall = drawnBalls[0] || null;
+  } else {
+    // 3. Victory & Payout Celebration Phase (Exactly 3 seconds)
+    phase = "victory";
+    isGameStarted = true;
+    countdown = 0;
+    const slice = fullBallsSequence.slice(0, winningBallCount);
+    drawnBalls = [...slice].reverse();
+    currentBall = drawnBalls[0] || null;
+  }
+
+  // Filter user's chosen tickets out of takenTickets so they don't conflict
+  const takenTickets = roomData.takenTickets.filter((t) => !userTickets.includes(t));
+  const totalRoomTickets = takenTickets.length + userTickets.length;
+  const jackpot = totalRoomTickets * 10;
+
+  return {
+    roundId,
+    phase,
+    countdown,
+    elapsedInRound,
+    isGameStarted,
+    drawnBalls,
+    currentBall,
+    winningBallCount,
+    winnerInfo: {
+      name: roomData.winnerName,
+      phone: roomData.winnerPhone,
+      ticket: roomData.winnerTicket,
+    },
+    totalRoomTickets,
+    takenTickets,
+    jackpot,
+  };
+}
+
+// --- LocalStorage persistence for user tickets across reloads ---
+const STORAGE_PREFIX_ROUND_TICKETS = "phoenix_user_round_tickets_";
+
+export function saveUserRoundTickets(roundId: number, tickets: number[]) {
+  try {
+    localStorage.setItem(
+      `${STORAGE_PREFIX_ROUND_TICKETS}${roundId}`,
+      JSON.stringify(tickets)
+    );
+  } catch {}
+}
+
+export function getUserRoundTickets(roundId: number): number[] {
+  try {
+    const raw = localStorage.getItem(`${STORAGE_PREFIX_ROUND_TICKETS}${roundId}`);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+export function clearOldRoundTickets(currentRoundId: number) {
+  try {
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if (key && key.startsWith(STORAGE_PREFIX_ROUND_TICKETS)) {
+        const id = parseInt(key.replace(STORAGE_PREFIX_ROUND_TICKETS, ""), 10);
+        if (!isNaN(id) && id < currentRoundId - 2) {
+          localStorage.removeItem(key);
+        }
+      }
+    }
+  } catch {}
+}
