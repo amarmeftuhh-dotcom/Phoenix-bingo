@@ -42,6 +42,7 @@ import {
   claimRemoteTicket,
   releaseRemoteTicket,
   subscribeRoomSync,
+  getLatestServerState,
 } from "@/lib/roomSyncService";
 
 const TOTAL_TICKETS = 550;
@@ -253,28 +254,44 @@ export function App() {
     fetchServerRoomState(currentRoundId);
 
     // Subscribe to multi-device updates
-    const unsubscribe = subscribeRoomSync(({ roundId, takenTickets }) => {
-      if (roundId === currentRoundId) {
-        setServerTakenTickets(takenTickets);
+    const unsubscribe = subscribeRoomSync((serverData) => {
+      if (serverData.takenTickets) {
+        setServerTakenTickets(serverData.takenTickets);
+      }
+      if (serverData.roundId !== currentRoundId) {
+        setCurrentRoundId(serverData.roundId);
       }
     });
 
-    // 1-second interval to fetch latest server room state across connected phones
+    // 600ms interval to fetch latest authoritative server room state across connected phones
     const pollInterval = setInterval(() => {
       fetchServerRoomState(currentRoundId);
-    }, 1000);
+    }, 600);
 
     const syncInterval = setInterval(() => {
       const activeUserTickets = Array.from(new Set([...confirmedTickets, ...pendingTickets]));
       const player = getStoredPlayer();
+      const serverState = getLatestServerState();
+
+      // Use authoritative server state when available, or mathematically identical local engine
       const snap = getLiveRoundSnapshot(activeUserTickets, serverTakenTickets, {
         name: player.name,
         phone: player.phone,
       });
 
+      const effectiveRoundId = serverState?.roundId ?? snap.roundId;
+      const effectivePhase = serverState?.phase ?? snap.phase;
+      const effectiveCountdown = serverState?.countdown ?? snap.countdown;
+      const effectiveDrawnBalls = serverState?.drawnBalls ?? snap.drawnBalls;
+      const effectiveJackpot = serverState?.jackpot ?? snap.jackpot;
+      const effectiveTotalTickets = serverState?.totalRoomTickets ?? snap.totalRoomTickets;
+      const effectiveTakenTickets = (serverState?.takenTickets ?? snap.takenTickets).filter(
+        (t) => !activeUserTickets.includes(t)
+      );
+
       // A. New Round Rollover (Epoch boundary reached)
-      if (snap.roundId !== currentRoundId) {
-        setCurrentRoundId(snap.roundId);
+      if (effectiveRoundId !== currentRoundId) {
+        setCurrentRoundId(effectiveRoundId);
         setConfirmedTickets([]);
         setPendingTickets([]);
         setServerTakenTickets([]);
@@ -282,29 +299,29 @@ export function App() {
         setWinners([]);
         setIsGameStarted(false);
         setDrawn([]);
-        setGlobalCountdown(snap.countdown);
-        setTakenTickets(snap.takenTickets);
-        setLiveJackpot(snap.jackpot);
-        setTotalRoomTickets(snap.totalRoomTickets);
-        setWaitingForPlayers(snap.waitingForPlayers);
+        setGlobalCountdown(effectiveCountdown);
+        setTakenTickets(effectiveTakenTickets);
+        setLiveJackpot(effectiveJackpot);
+        setTotalRoomTickets(effectiveTotalTickets);
+        setWaitingForPlayers(false);
         lastDrawnCountRef.current = 0;
-        clearOldRoundTickets(snap.roundId);
+        clearOldRoundTickets(effectiveRoundId);
         return;
       }
 
       // B. Sync Live Room Meta & Timer
-      setGlobalCountdown(snap.countdown);
-      setTakenTickets(snap.takenTickets);
-      setLiveJackpot(snap.jackpot);
-      setTotalRoomTickets(snap.totalRoomTickets);
-      setWaitingForPlayers(snap.waitingForPlayers);
+      setGlobalCountdown(effectiveCountdown);
+      setTakenTickets(effectiveTakenTickets);
+      setLiveJackpot(effectiveJackpot);
+      setTotalRoomTickets(effectiveTotalTickets);
+      setWaitingForPlayers(false);
 
       // C. Sync Phases
-      if (snap.phase === "lobby") {
+      if (effectivePhase === "lobby") {
         setIsGameStarted(false);
         setWon(false);
         setDrawn([]);
-      } else if (snap.phase === "game") {
+      } else if (effectivePhase === "game") {
         setIsGameStarted(true);
 
         // Auto-confirm pending tickets when round starts
@@ -312,22 +329,22 @@ export function App() {
           const allConfirmed = Array.from(new Set([...confirmedTickets, ...pendingTickets]));
           setConfirmedTickets(allConfirmed);
           setPendingTickets([]);
-          saveUserRoundTickets(snap.roundId, allConfirmed);
+          saveUserRoundTickets(effectiveRoundId, allConfirmed);
         }
 
         // Live voice call when a new ball drops
-        if (snap.drawnBalls.length > lastDrawnCountRef.current) {
-          const newBall = snap.drawnBalls[0];
+        if (effectiveDrawnBalls.length > lastDrawnCountRef.current) {
+          const newBall = effectiveDrawnBalls[0];
           if (newBall) {
             buzz(12);
             playNumberCallVoice(newBall);
           }
-          lastDrawnCountRef.current = snap.drawnBalls.length;
+          lastDrawnCountRef.current = effectiveDrawnBalls.length;
         }
-        setDrawn(snap.drawnBalls);
-      } else if (snap.phase === "victory") {
+        setDrawn(effectiveDrawnBalls);
+      } else if (effectivePhase === "victory") {
         setIsGameStarted(true);
-        setDrawn(snap.drawnBalls);
+        setDrawn(effectiveDrawnBalls);
       }
     }, 500);
 
@@ -396,16 +413,26 @@ export function App() {
       }
     }
 
-    // Room Winner when victory phase is reached (shown to everyone so it feels live and real!)
+    // Room Winner when victory phase is reached (synchronized across all connected phones and tabs)
     const player = getStoredPlayer();
+    const serverState = getLatestServerState();
     const snap = getLiveRoundSnapshot(activeTickets, serverTakenTickets, {
       name: player.name,
       phone: player.phone,
     });
-    if (snap.phase === "victory" && !won && snap.totalRoomTickets >= 2) {
+
+    const isVictoryPhase = serverState?.phase === "victory" || snap.phase === "victory";
+    const winnerTicket = serverState?.winnerInfo?.ticket ?? snap.winnerInfo.ticket;
+    const isUserWin = activeTickets.includes(winnerTicket);
+    const winnerName = isUserWin ? `${player.name} (እርስዎ)` : (serverState?.winnerInfo?.name ?? snap.winnerInfo.name);
+    const winnerPhone = isUserWin
+      ? player.phone
+        ? player.phone.slice(0, 4) + "***" + player.phone.slice(-2)
+        : "09***38"
+      : (serverState?.winnerInfo?.phone ?? snap.winnerInfo.phone);
+
+    if (isVictoryPhase && !won) {
       buzz([15, 40, 20]);
-      const winner = snap.winnerInfo;
-      const isUserWin = winner.isUser;
       if (isUserWin) {
         const payoutKey = `phoenix_payout_claimed_round_${currentRoundId}`;
         if (!localStorage.getItem(payoutKey)) {
@@ -419,13 +446,9 @@ export function App() {
       }
       setWinners([
         {
-          name: isUserWin ? `${player.name} (እርስዎ)` : winner.name,
-          phone: isUserWin
-            ? player.phone
-              ? player.phone.slice(0, 4) + "***" + player.phone.slice(-2)
-              : "09***38"
-            : winner.phone,
-          ticket: winner.ticket,
+          name: winnerName,
+          phone: winnerPhone,
+          ticket: winnerTicket,
           amount: liveJackpot,
           isUser: isUserWin,
         },
