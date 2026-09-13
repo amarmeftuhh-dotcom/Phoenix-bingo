@@ -18,14 +18,14 @@ export interface BotSettings {
 }
 
 const DEFAULT_BOT_SETTINGS: BotSettings = {
-  isBotSystemActive: false, // Default to FALSE: Start clean from 0 like a real game
+  isBotSystemActive: false, // Only real players by default, no fake 40 Birr phantom jackpot
   botWinnerForce: "ai",
-  botD1: 5,
-  botD2: 4,
-  botD3: 3,
-  botD4: 3,
+  botD1: 3,
+  botD2: 2,
+  botD3: 1,
+  botD4: 1,
   minBots: 0,
-  maxBots: 50,
+  maxBots: 0,
 };
 
 export function getStoredBotSettings(): BotSettings {
@@ -68,4 +68,3 @@ export function triggerAddBotTickets(count: number) {
 export function triggerClearBotTickets() {
   window.dispatchEvent(new CustomEvent("phoenix_admin_clear_bots"));
 }
-
