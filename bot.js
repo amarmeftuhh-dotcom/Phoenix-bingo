@@ -7,16 +7,338 @@ import https from "node:https";
 import http from "node:http";
 import { MongoClient } from "mongodb";
 
-// 1. Render Health Check Server (Port 10000)
+// 1. Render Web Service & Realtime Room Sync Server
 const PORT = process.env.PORT || 10000;
+const botRoundsMap = new Map();
+
+const LOBBY_MS = 45000;
+const CALLING_MS = 50000;
+const VICTORY_MS = 3000;
+const ROUND_DURATION_MS = 98000;
+const BALL_INTERVAL_MS = 2500;
+
+const OPPONENT_NAMES = [
+  "አበበ ተፈራ", "ሰለሞን ካሳ", "ዳንኤል ወርቁ", "ኤርሚያስ ታደሰ",
+  "ዮናስ በቀለ", "በረከት አያሌው", "ኪሩቤል አለሙ", "ያብስራ ተሾመ",
+  "ሄኖክ ግርማ", "ናሆም ደጀኔ", "ቴዎድሮስ ካሳሁን", "አማኑኤል ጥላሁን",
+  "ታምራት ደስታ", "ማህሌት ጌታቸው", "ራሄል ታደለ", "ህሊና ሰለሞን",
+  "ዳዊት ከበደ", "ትዕግስት አለሙ", "ሳራ ታደሰ", "መሳይ አስፋው"
+];
+
+function createPRNG(seed) {
+  let s = (seed * 1664525 + 1013904223) >>> 0;
+  return function next() {
+    s = (Math.imul(s, 1664525) + 1013904223) >>> 0;
+    return s / 4294967296;
+  };
+}
+
+function getDeterministicBalls(roundId) {
+  const balls = Array.from({ length: 75 }, (_, i) => i + 1);
+  const rand = createPRNG(roundId * 982451653);
+  for (let i = balls.length - 1; i > 0; i--) {
+    const j = Math.floor(rand() * (i + 1));
+    const temp = balls[i];
+    balls[i] = balls[j];
+    balls[j] = temp;
+  }
+  return balls;
+}
+
+function generateBoard(ticketId) {
+  let seed = (ticketId * 1234567) >>> 0;
+  function nextRand() {
+    seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
+    return seed / 4294967296;
+  }
+  nextRand(); nextRand(); nextRand();
+
+  function getCol(min, max) {
+    const arr = [];
+    while (arr.length < 5) {
+      const val = Math.floor(nextRand() * (max - min + 1)) + min;
+      if (!arr.includes(val)) arr.push(val);
+    }
+    return arr.sort((a, b) => a - b);
+  }
+
+  const columns = [
+    getCol(1, 15),
+    getCol(16, 30),
+    getCol(31, 45),
+    getCol(46, 60),
+    getCol(61, 75),
+  ];
+
+  const cells = [];
+  for (let r = 0; r < 5; r++) {
+    for (let c = 0; c < 5; c++) {
+      if (r === 2 && c === 2) {
+        cells.push({ row: r, col: c, value: "FREE" });
+      } else {
+        cells.push({ row: r, col: c, value: columns[c][r] });
+      }
+    }
+  }
+  return cells;
+}
+
+function checkBingoPattern(grid) {
+  for (let r = 0; r < 5; r++) {
+    if (grid[r].every(Boolean)) return true;
+  }
+  for (let c = 0; c < 5; c++) {
+    let colFull = true;
+    for (let r = 0; r < 5; r++) {
+      if (!grid[r][c]) { colFull = false; break; }
+    }
+    if (colFull) return true;
+  }
+  let d1 = true;
+  for (let i = 0; i < 5; i++) {
+    if (!grid[i][i]) { d1 = false; break; }
+  }
+  if (d1) return true;
+  let d2 = true;
+  for (let i = 0; i < 5; i++) {
+    if (!grid[i][4 - i]) { d2 = false; break; }
+  }
+  if (d2) return true;
+  if (grid[0][0] && grid[0][4] && grid[4][0] && grid[4][4]) return true;
+  return false;
+}
+
+function evaluateWinner(tickets, balls) {
+  if (tickets.length === 0) return { winningTicket: 1, winningBallCount: 20 };
+  const boards = tickets.map((t) => ({ t, cells: generateBoard(t) }));
+  for (let k = 4; k <= 20; k++) {
+    const drawnSet = new Set(balls.slice(0, k));
+    for (const b of boards) {
+      const grid = Array.from({ length: 5 }, () => Array(5).fill(false));
+      b.cells.forEach((cell) => {
+        grid[cell.row][cell.col] = cell.value === "FREE" || (typeof cell.value === "number" && drawnSet.has(cell.value));
+      });
+      if (checkBingoPattern(grid)) {
+        return { winningTicket: b.t, winningBallCount: k };
+      }
+    }
+  }
+  return { winningTicket: tickets[0] || 1, winningBallCount: 20 };
+}
+
+function getDeterministicOpponents(roundId) {
+  const rand = createPRNG(roundId * 433494437);
+  const count = 4 + Math.floor(rand() * 4);
+  const opponents = [];
+  const used = new Set();
+  for (let i = 0; i < count; i++) {
+    let t = Math.floor(rand() * 450) + 1;
+    while (used.has(t)) {
+      t = (t + 1) % 450 + 1;
+    }
+    used.add(t);
+    const nIdx = Math.floor(rand() * OPPONENT_NAMES.length);
+    const phone = `09${Math.floor(10 + rand() * 80)}***${Math.floor(10 + rand() * 89)}`;
+    opponents.push({
+      ticketNum: t,
+      userName: OPPONENT_NAMES[nIdx] || "ተጫዋች",
+      userPhone: phone,
+    });
+  }
+  return opponents;
+}
+
+function getOrCreateBotRound(roundId) {
+  let roundMap = botRoundsMap.get(roundId);
+  if (!roundMap) {
+    roundMap = new Map();
+    botRoundsMap.set(roundId, roundMap);
+  }
+  if (botRoundsMap.size > 8) {
+    for (const rId of botRoundsMap.keys()) {
+      if (rId < roundId - 5) botRoundsMap.delete(rId);
+    }
+  }
+  return roundMap;
+}
+
 http.createServer((req, res) => {
+  // CORS Headers
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+
+  if (req.method === "OPTIONS") {
+    res.writeHead(204);
+    res.end();
+    return;
+  }
+
+  const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
+
+  if (url.pathname === "/api/room/state") {
+    const now = Date.now();
+    const currentRoundId = Math.floor(now / ROUND_DURATION_MS);
+    const elapsed = now % ROUND_DURATION_MS;
+
+    const roundMap = getOrCreateBotRound(currentRoundId);
+    const realTickets = Array.from(roundMap.keys());
+    const opponentList = getDeterministicOpponents(currentRoundId);
+
+    const filteredOpponents = opponentList.filter((o) => !roundMap.has(o.ticketNum));
+    const allTaken = Array.from(new Set([...realTickets, ...filteredOpponents.map((o) => o.ticketNum)]));
+
+    const details = {};
+    const uniqueUsers = new Set();
+
+    for (const [tNum, info] of roundMap.entries()) {
+      details[tNum] = { userId: info.userId, userName: info.userName, userPhone: info.userPhone };
+      uniqueUsers.add(info.userId);
+    }
+    for (const o of filteredOpponents) {
+      details[o.ticketNum] = { userId: `opp_${o.ticketNum}`, userName: o.userName, userPhone: o.userPhone };
+    }
+
+    const balls = getDeterministicBalls(currentRoundId);
+    const { winningTicket, winningBallCount } = evaluateWinner(allTaken, balls);
+
+    const winnerRecord = details[winningTicket];
+    const winnerInfo = {
+      ticket: winningTicket,
+      winningBallCount,
+      name: winnerRecord?.userName || "አበበ ተፈራ",
+      phone: winnerRecord?.userPhone || "0911***89",
+      userId: winnerRecord?.userId || `opp_${winningTicket}`,
+    };
+
+    let phase = "lobby";
+    let countdown = 0;
+    let drawnBalls = [];
+
+    if (elapsed < LOBBY_MS) {
+      phase = "lobby";
+      countdown = Math.max(0, Math.ceil((LOBBY_MS - elapsed) / 1000));
+      drawnBalls = [];
+    } else if (elapsed < LOBBY_MS + CALLING_MS) {
+      phase = "game";
+      countdown = 0;
+      const gameElapsed = elapsed - LOBBY_MS;
+      const count = Math.min(20, Math.floor(gameElapsed / BALL_INTERVAL_MS) + 1);
+      drawnBalls = balls.slice(0, count).reverse();
+    } else {
+      phase = "victory";
+      countdown = Math.max(0, Math.ceil((ROUND_DURATION_MS - elapsed) / 1000));
+      drawnBalls = balls.slice(0, 20).reverse();
+    }
+
+    const currentBall = drawnBalls[0] || null;
+    const totalRoomTickets = allTaken.length;
+    const jackpot = totalRoomTickets * 10;
+
+    res.writeHead(200, {
+      "Content-Type": "application/json",
+      "Cache-Control": "no-store, no-cache, must-revalidate",
+    });
+    res.end(JSON.stringify({
+      success: true,
+      serverTime: now,
+      roundId: currentRoundId,
+      phase,
+      countdown,
+      elapsedInRound: elapsed,
+      drawnBalls,
+      currentBall,
+      totalRoomTickets,
+      takenTickets: allTaken,
+      takenDetails: details,
+      jackpot,
+      winnerInfo,
+      playersCount: uniqueUsers.size + filteredOpponents.length,
+    }));
+    return;
+  }
+
+  if (url.pathname === "/api/room/select" && req.method === "POST") {
+    let bodyStr = "";
+    req.on("data", (chunk) => { bodyStr += chunk; });
+    req.on("end", () => {
+      try {
+        const body = JSON.parse(bodyStr || "{}");
+        const roundId = typeof body.roundId === "number" ? body.roundId : 0;
+        const roundMap = getOrCreateBotRound(roundId);
+
+        if (body.ticketNum && body.userId) {
+          const existing = roundMap.get(body.ticketNum);
+          if (existing && existing.userId !== body.userId) {
+            const taken = Array.from(roundMap.keys());
+            res.writeHead(200, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ success: false, error: "TICKET_ALREADY_TAKEN", takenTickets: taken }));
+            return;
+          }
+          roundMap.set(body.ticketNum, { userId: body.userId, name: body.userName || "ተጫዋች", time: Date.now() });
+        }
+        const taken = Array.from(roundMap.keys());
+        const uniqueUsers = new Set(Array.from(roundMap.values()).map((v) => v.userId));
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ success: true, serverTime: Date.now(), roundId, takenTickets: taken, playersCount: uniqueUsers.size }));
+      } catch {
+        res.writeHead(400, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ success: false }));
+      }
+    });
+    return;
+  }
+
+  if (url.pathname === "/api/room/unselect" && req.method === "POST") {
+    let bodyStr = "";
+    req.on("data", (chunk) => { bodyStr += chunk; });
+    req.on("end", () => {
+      try {
+        const body = JSON.parse(bodyStr || "{}");
+        const roundId = typeof body.roundId === "number" ? body.roundId : 0;
+        const roundMap = getOrCreateBotRound(roundId);
+        if (body.ticketNum) {
+          roundMap.delete(body.ticketNum);
+        }
+        const taken = Array.from(roundMap.keys());
+        const uniqueUsers = new Set(Array.from(roundMap.values()).map((v) => v.userId));
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ success: true, serverTime: Date.now(), roundId, takenTickets: taken, playersCount: uniqueUsers.size }));
+      } catch {
+        res.writeHead(400, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ success: false }));
+      }
+    });
+    return;
+  }
+
+  if (url.pathname === "/api/room/unselect" && req.method === "POST") {
+    let bodyStr = "";
+    req.on("data", (chunk) => { bodyStr += chunk; });
+    req.on("end", () => {
+      try {
+        const body = JSON.parse(bodyStr || "{}");
+        if (body.ticketNum) {
+          botServerTakenTickets.delete(body.ticketNum);
+        }
+        const taken = Array.from(botServerTakenTickets.keys());
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ success: true, takenTickets: taken }));
+      } catch {
+        res.writeHead(400, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ success: false }));
+      }
+    });
+    return;
+  }
+
   res.writeHead(200, { "Content-Type": "text/plain" });
-  res.end("Phoenix Bingo Bot is running 24/7!\n");
+  res.end("Phoenix Bingo Bot & Live Sync Server is running 24/7 with MongoDB Atlas!\n");
 }).listen(PORT, () => {
-  console.log("Health check server listening on port " + PORT);
+  console.log("HTTP health-check and room-sync server listening on port " + PORT);
 });
 
-// 2. Settings
+// 2. Constants & Settings
 const BOT_TOKEN = process.env.BOT_TOKEN || "8606075616:AAFmq_dQ_eCRDzEqnw5N2Ybc9_dkOS5BiDg";
 const WEBAPP_URL = process.env.WEBAPP_URL || "https://phoenix-bingo.onrender.com/#home";
 const MONGO_URI = process.env.MONGO_URI || "mongodb+srv://Phoenix:761724@cluster0.pivq9lg.mongodb.net/phoenix_bingo?retryWrites=true&w=majority";
@@ -30,7 +352,7 @@ const ADMIN_CONFIG = {
   initialPlayBonus: 15.00, // 15 ETB መጫወቻ ቦነስ
 };
 
-// ስልኩን ያላጋራ ሰው የሚያየው ብቸኛ ቁልፍ
+// 📱 ስልኩን ያላረጋገጠ ሰው የሚያየው አንድ እና ብቸኛ ቁልፍ
 const CONTACT_KEYBOARD = {
   keyboard: [
     [
@@ -44,9 +366,12 @@ const CONTACT_KEYBOARD = {
   one_time_keyboard: false,
 };
 
-// ስልኩን ያረጋገጠ ሰው የሚያየው ዋና ኪቦርድ (በብሮውዘር ክፈት የሌለበት!)
+// 🎮 ስልኩን ያረጋገጠ ሰው ብቻ የሚያየው ዋና ኪቦርድ (በብሮውዘር ክፈት የሌለበት!)
 function getVerifiedKeyboard(user) {
-  const playUrl = WEBAPP_URL + "?tgId=" + user.userId + "&phone=" + encodeURIComponent(user.phone || "") + "&name=" + encodeURIComponent(user.name || "");
+  const bonus = user.bonus != null ? user.bonus : ADMIN_CONFIG.initialPlayBonus;
+  const balance = user.balance != null ? user.balance : 0;
+  const cleanBase = (process.env.WEBAPP_URL || "https://phoenix-bingo.onrender.com").replace(/#.*$/, "");
+  const playUrl = `${cleanBase}?tgId=${user.userId}&phone=${encodeURIComponent(user.phone || "")}&name=${encodeURIComponent(user.name || "")}&bonus=${bonus}&balance=${balance}#home`;
   return {
     keyboard: [
       [{ text: "🎮 ጌም ይጫወቱ (PLAY)", web_app: { url: playUrl } }],
@@ -87,7 +412,15 @@ function generatePassword() {
 async function getOrCreateUser(userId, userName, username) {
   const database = await getDatabase();
   if (!database) {
-    return { userId: String(userId), name: userName, phone: "", balance: 0, bonus: ADMIN_CONFIG.initialPlayBonus, password: generatePassword() };
+    return {
+      userId: String(userId),
+      name: userName || "ተጫዋች",
+      phone: "",
+      balance: 0.00,
+      bonus: ADMIN_CONFIG.initialPlayBonus,
+      totalWon: 0.00,
+      password: generatePassword(),
+    };
   }
   const usersCollection = database.collection("users");
   
@@ -250,7 +583,9 @@ async function handleUpdate(update) {
     const cleanPhone = await registerUserPhone(userId, contactPhone);
     user.phone = cleanPhone;
 
-    const playUrl = WEBAPP_URL + "?tgId=" + userId + "&phone=" + encodeURIComponent(cleanPhone) + "&name=" + encodeURIComponent(userName);
+    const bonus = user.bonus != null ? user.bonus : ADMIN_CONFIG.initialPlayBonus;
+    const balance = user.balance != null ? user.balance : 0;
+    const playUrl = WEBAPP_URL + "?tgId=" + userId + "&phone=" + encodeURIComponent(cleanPhone) + "&name=" + encodeURIComponent(userName) + "&bonus=" + bonus + "&balance=" + balance;
 
     const welcomeMsg = [
       "🎉 <b>እንኳን ደስ አሎት " + userName + "! ምዝገባው ተጠናቋል።</b>",
@@ -261,8 +596,8 @@ async function handleUpdate(update) {
       "🔹 <b>ስልክ:</b> <code>" + cleanPhone + "</code>",
       "🔑 <b>የይለፍ ቃል:</b> <code>" + user.password + "</code>",
       "",
-      "💰 <b>መጫወቻ ሂሳብ:</b> <b>" + (user.bonus || 15).toFixed(2) + " ETB</b>",
-      "💰 <b>ዋና ሂሳብ:</b> <b>" + (user.balance || 0).toFixed(2) + " ETB</b>",
+      "💰 <b>መጫወቻ ሂሳብ:</b> <b>" + bonus.toFixed(2) + " ETB</b>",
+      "💰 <b>ዋና ሂሳብ:</b> <b>" + balance.toFixed(2) + " ETB</b>",
       "",
       "👇 <b>ጌሙን ለመጀመር ከታች '🎮 ጌም ይጫወቱ (PLAY)' የሚለውን ይጫኑ።</b>"
     ].join("\n");
@@ -277,7 +612,7 @@ async function handleUpdate(update) {
     return;
   }
 
-  // 2. 🛑 ስልኩን ያላጋራ ሰው ሌላ ምንም ነገር እንዳያይ መከልከል (ብቸኛ መልእክት)
+  // 2. 🛑 ስልኩን ያላጋራ ሰው ሌላ ምንም ነገር እንዳያይ መከልከል
   if (!user.phone) {
     const askPhoneMsg = [
       "🇪🇹 <b>እንኳን ወደ ፊኒክስ ቢንጎ በደህና መጡ!</b> 🦅",
@@ -303,13 +638,16 @@ async function handleUpdate(update) {
 
   // 4. 🎮 ጌም ይጫወቱ (ስልካቸውን ላረጋገጡ ብቻ — "በብሮውዘር ክፈት" የሌለበት!)
   if (text === "/play" || text === "/start" || text.includes("play") || text.includes("ጌም")) {
-    const playUrl = WEBAPP_URL + "?tgId=" + userId + "&phone=" + encodeURIComponent(user.phone) + "&name=" + encodeURIComponent(userName);
+    const bonus = user.bonus != null ? user.bonus : ADMIN_CONFIG.initialPlayBonus;
+    const balance = user.balance != null ? user.balance : 0;
+    const playUrl = WEBAPP_URL + "?tgId=" + userId + "&phone=" + encodeURIComponent(user.phone) + "&name=" + encodeURIComponent(userName) + "&bonus=" + bonus + "&balance=" + balance;
+
     const msg = [
       "🇪🇹 <b>እንኳን ወደ ፊኒክስ ቢንጎ በደህና መጡ፣ " + userName + "!</b> 🎮",
       "",
       "📱 <b>ስልክ:</b> <code>" + user.phone + "</code>",
-      "💰 <b>መጫወቻ ሂሳብ:</b> <b>" + (user.bonus || 0).toFixed(2) + " ETB</b>",
-      "💰 <b>ዋና ሂሳብ:</b> <b>" + (user.balance || 0).toFixed(2) + " ETB</b>",
+      "💰 <b>መጫወቻ ሂሳብ:</b> <b>" + bonus.toFixed(2) + " ETB</b>",
+      "💰 <b>ዋና ሂሳብ:</b> <b>" + balance.toFixed(2) + " ETB</b>",
       "",
       "👇 <b>ከታች ያለውን ሰማያዊ ቁልፍ ተጭነው ጨዋታውን ይክፈቱ፦</b>"
     ].join("\n");
@@ -327,7 +665,7 @@ async function handleUpdate(update) {
   // 5. 💰 ሒሳብ ማረጋገጫ
   if (text === "/account" || text.includes("account") || text.includes("ሂሳብ") || text.includes("ሒሳብ")) {
     const balanceStr = (user.balance || 0).toFixed(2);
-    const bonusStr = (user.bonus || 0).toFixed(2);
+    const bonusStr = (user.bonus != null ? user.bonus : ADMIN_CONFIG.initialPlayBonus).toFixed(2);
     const wonStr = (user.totalWon || 0).toFixed(2);
 
     const msg = [
