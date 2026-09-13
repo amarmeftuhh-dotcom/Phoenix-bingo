@@ -121,6 +121,7 @@ export function App() {
   const [showPromoModal, setShowPromoModal] = useState(false);
   const [promoCodeInput, setPromoCodeInput] = useState("");
   const [promoToast, setPromoToast] = useState<string | null>(null);
+  const [liveTicketNotice, setLiveTicketNotice] = useState<string | null>(null);
 
   // Continuous Global Synchronized Live Game Engine (Identical across all devices)
   const [globalCountdown, setGlobalCountdown] = useState<number>(initialSnap.countdown);
@@ -253,15 +254,41 @@ export function App() {
     // Initial fetch from server
     fetchServerRoomState(currentRoundId);
 
-    // Subscribe to multi-device updates
+    // Subscribe to multi-device updates (instant push via SSE)
     const unsubscribe = subscribeRoomSync((serverData) => {
+      const activeUserTickets = new Set([...confirmedTickets, ...pendingTickets]);
       if (serverData.takenTickets) {
         setServerTakenTickets(serverData.takenTickets);
+        setTakenTickets(serverData.takenTickets.filter((t) => !activeUserTickets.has(t)));
+      }
+      if (typeof serverData.jackpot === "number") {
+        setLiveJackpot(serverData.jackpot);
+      }
+      if (typeof serverData.totalRoomTickets === "number") {
+        setTotalRoomTickets(serverData.totalRoomTickets);
+      }
+      if (typeof serverData.countdown === "number") {
+        setGlobalCountdown(serverData.countdown);
       }
       if (serverData.roundId !== currentRoundId) {
         setCurrentRoundId(serverData.roundId);
       }
     });
+
+    // Instant toast notification when any player or opponent takes a ticket
+    const handleRemoteTicketClaimed = (e: any) => {
+      const detail = e.detail;
+      if (detail && detail.ticketNum) {
+        const activeUserTickets = new Set([...confirmedTickets, ...pendingTickets]);
+        if (!activeUserTickets.has(detail.ticketNum)) {
+          const taker = detail.userName ? `በ ${detail.userName}` : "በሌላ ተጫዋች";
+          setLiveTicketNotice(`⚡ ካርቴላ #${detail.ticketNum} ${taker} ተይዟል (+10 ETB የቀጥታ ጃክፖት)!`);
+          buzz(8);
+          setTimeout(() => setLiveTicketNotice(null), 2500);
+        }
+      }
+    };
+    window.addEventListener("phoenix_ticket_claimed_live", handleRemoteTicketClaimed);
 
     // 600ms interval to fetch latest authoritative server room state across connected phones
     const pollInterval = setInterval(() => {
@@ -351,6 +378,7 @@ export function App() {
     return () => {
       clearInterval(syncInterval);
       clearInterval(pollInterval);
+      window.removeEventListener("phoenix_ticket_claimed_live", handleRemoteTicketClaimed);
       unsubscribe();
     };
   }, [currentRoundId, confirmedTickets, pendingTickets, serverTakenTickets]);
@@ -587,6 +615,17 @@ export function App() {
           <div className="fixed top-12 left-1/2 -translate-x-1/2 z-50 flex items-center gap-2 rounded-2xl border border-gold bg-amber-950/95 px-4 py-2.5 text-xs font-black text-gold shadow-2xl backdrop-blur-md animate-in fade-in slide-in-from-top-4">
             <Sparkles className="h-4 w-4 text-gold animate-spin" />
             <span>{promoToast}</span>
+          </div>
+        )}
+
+        {/* Live Remote Ticket Claimed Alert Toast */}
+        {liveTicketNotice && (
+          <div className="fixed top-14 left-1/2 -translate-x-1/2 z-50 flex items-center gap-2 rounded-2xl border border-rose-500/80 bg-rose-950/95 px-4 py-2 text-xs font-black text-rose-200 shadow-2xl backdrop-blur-md animate-in fade-in slide-in-from-top-3">
+            <span className="relative flex h-2 w-2">
+              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-rose-400 opacity-75"></span>
+              <span className="relative inline-flex rounded-full h-2 w-2 bg-rose-500"></span>
+            </span>
+            <span>{liveTicketNotice}</span>
           </div>
         )}
 
