@@ -192,7 +192,7 @@ export function LobbyView({
       {waitingForPlayers && (
         <div className="mx-3 mt-2.5 flex items-center justify-center gap-2 rounded-2xl border border-amber-500/40 bg-amber-500/10 px-3 py-2.5 text-xs font-black text-amber-400 shadow-sm animate-pulse">
           <Users className="h-4 w-4 shrink-0 text-amber-400" />
-          <span>ጨዋታው ለመጀመር ቢያንስ 2 ተጫዋች (ወይም ቦቶች) ያስፈልጋል። ሌላ ተጫዋች በመጠበቅ ላይ...</span>
+          <span>ጨዋታው ለመጀመር ቢያንስ 2 ተጫዋቾች ያስፈልጋሉ። ሌላ ተጫዋች በመጠበቅ ላይ...</span>
         </div>
       )}
 
