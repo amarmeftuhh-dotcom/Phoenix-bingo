@@ -259,6 +259,11 @@ export function App() {
       }
     });
 
+    // 1-second interval to fetch latest server room state across connected phones
+    const pollInterval = setInterval(() => {
+      fetchServerRoomState(currentRoundId);
+    }, 1000);
+
     const syncInterval = setInterval(() => {
       const activeUserTickets = Array.from(new Set([...confirmedTickets, ...pendingTickets]));
       const player = getStoredPlayer();
@@ -266,11 +271,6 @@ export function App() {
         name: player.name,
         phone: player.phone,
       });
-
-      // Periodic poll from server for cross-device updates
-      if (Date.now() % 2000 < 550) {
-        fetchServerRoomState(snap.roundId);
-      }
 
       // A. New Round Rollover (Epoch boundary reached)
       if (snap.roundId !== currentRoundId) {
@@ -333,6 +333,7 @@ export function App() {
 
     return () => {
       clearInterval(syncInterval);
+      clearInterval(pollInterval);
       unsubscribe();
     };
   }, [currentRoundId, confirmedTickets, pendingTickets, serverTakenTickets]);
@@ -478,6 +479,12 @@ export function App() {
       saveUserRoundTickets(currentRoundId, nextPending);
       releaseRemoteTicket(currentRoundId, ticketNum);
       setPlayWallet((prev) => prev + STAKE_PER_TICKET);
+      return;
+    }
+
+    // Check if taken by another phone or room opponent
+    if (takenTickets.includes(ticketNum)) {
+      alert("ይህ ካርቴላ በሌላ ተጫዋች ተይዟል! እባክዎ ሌላ ካርቴላ ይምረጡ።");
       return;
     }
 
