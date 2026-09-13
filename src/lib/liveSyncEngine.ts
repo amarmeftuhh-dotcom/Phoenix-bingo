@@ -238,6 +238,28 @@ export function getDeterministicRoomData(
   };
 }
 
+export function getDeterministicOpponents(roundId: number) {
+  const rand = createSeededPRNG(roundId * 433494437);
+  const count = 4 + Math.floor(rand() * 4); // 4 to 7 opponent tickets
+  const opponents: { ticketNum: number; userName: string; userPhone: string }[] = [];
+  const used = new Set<number>();
+  for (let i = 0; i < count; i++) {
+    let t = Math.floor(rand() * 450) + 1;
+    while (used.has(t)) {
+      t = (t + 1) % 450 + 1;
+    }
+    used.add(t);
+    const nIdx = Math.floor(rand() * OPPONENT_NAMES.length);
+    const phone = `09${Math.floor(10 + rand() * 80)}***${Math.floor(10 + rand() * 89)}`;
+    opponents.push({
+      ticketNum: t,
+      userName: OPPONENT_NAMES[nIdx] || "ተጫዋች",
+      userPhone: phone,
+    });
+  }
+  return opponents;
+}
+
 /**
  * Computes the exact live state of the round based on universal epoch time,
  * combining local user tickets, opponent tickets, and real external player tickets!
@@ -248,50 +270,22 @@ export function getLiveRoundSnapshot(
   userProfile?: { name?: string; phone?: string }
 ): LiveRoundSnapshot {
   const now = getSynchronizedNow();
-  const { roundId, elapsedInRound, winningBallCount: defaultWinningBallCount } = getCurrentRoundInfo(now);
+  const roundId = Math.floor(now / ROUND_DURATION_MS);
+  const elapsedInRound = now % ROUND_DURATION_MS;
 
-  const roomData = getDeterministicRoomData(roundId, defaultWinningBallCount, elapsedInRound);
-  const fullBallsSequence = getDeterministicBallsForRound(roundId);
+  const opponents = getDeterministicOpponents(roundId);
+  const opponentTicketNums = opponents.map((o) => o.ticketNum);
 
-  // Combine opponent tickets + external real tickets from other phones, excluding user's tickets
+  // Filter out any user tickets from taken tickets
   const opponentTickets = Array.from(
-    new Set([...roomData.takenTickets, ...externalTakenTickets])
+    new Set([...opponentTicketNums, ...externalTakenTickets])
   ).filter((t) => !userTickets.includes(t));
 
   const allParticipatingTickets = Array.from(new Set([...userTickets, ...opponentTickets]));
   const totalRoomTickets = allParticipatingTickets.length;
   const jackpot = totalRoomTickets * 10;
 
-  // RULE: 1 person CANNOT play alone!
-  // If total tickets < 2 (e.g. 0 tickets or only 1 person with 0 opponents and 0 other players),
-  // THE GAME CANNOT START! Round waits for opponents.
-  const canStart = totalRoomTickets >= 2;
-  const waitingForPlayers = totalRoomTickets > 0 && !canStart;
-
-  if (!canStart) {
-    const countdown = Math.max(0, Math.ceil((LOBBY_MS - (elapsedInRound % LOBBY_MS)) / 1000));
-    return {
-      roundId,
-      phase: "lobby",
-      countdown,
-      elapsedInRound,
-      isGameStarted: false,
-      canStart: false,
-      waitingForPlayers,
-      drawnBalls: [],
-      currentBall: null,
-      winningBallCount: 20,
-      winnerInfo: {
-        name: "",
-        phone: "",
-        ticket: 0,
-        isUser: false,
-      },
-      totalRoomTickets,
-      takenTickets: opponentTickets,
-      jackpot,
-    };
-  }
+  const fullBallsSequence = getDeterministicBallsForRound(roundId);
 
   // Real Bingo Evaluation: checks which participating card hits 5 in a row or 4 corners first
   const { winningTicket, winningBallCount } = findFirstBingoWinner(
@@ -299,7 +293,6 @@ export function getLiveRoundSnapshot(
     fullBallsSequence
   );
 
-  const callingMs = winningBallCount * BALL_INTERVAL_MS;
   const isWinnerUser = userTickets.includes(winningTicket);
 
   let winnerName = "";
@@ -309,10 +302,16 @@ export function getLiveRoundSnapshot(
     winnerName = userProfile?.name || "እርስዎ (You)";
     winnerPhone = userProfile?.phone || "09********";
   } else {
-    const prng = createSeededPRNG(roundId * 7919 + winningTicket);
-    const nameIdx = Math.floor(prng() * OPPONENT_NAMES.length);
-    winnerName = OPPONENT_NAMES[nameIdx] || "አበበ ተፈራ";
-    winnerPhone = `09${Math.floor(10 + prng() * 80)}***${Math.floor(10 + prng() * 89)}`;
+    const opp = opponents.find((o) => o.ticketNum === winningTicket);
+    if (opp) {
+      winnerName = opp.userName;
+      winnerPhone = opp.userPhone;
+    } else {
+      const prng = createSeededPRNG(roundId * 7919 + winningTicket);
+      const nameIdx = Math.floor(prng() * OPPONENT_NAMES.length);
+      winnerName = OPPONENT_NAMES[nameIdx] || "አበበ ተፈራ";
+      winnerPhone = `09${Math.floor(10 + prng() * 80)}***${Math.floor(10 + prng() * 89)}`;
+    }
   }
 
   let phase: "lobby" | "game" | "victory" = "lobby";
@@ -322,33 +321,27 @@ export function getLiveRoundSnapshot(
   let currentBall: number | null = null;
 
   if (elapsedInRound < LOBBY_MS) {
-    // 1. Lobby Betting Phase
+    // 1. Lobby Betting Phase (0 - 45s)
     phase = "lobby";
     countdown = Math.max(0, Math.ceil((LOBBY_MS - elapsedInRound) / 1000));
     isGameStarted = false;
     drawnBalls = [];
     currentBall = null;
-  } else if (elapsedInRound < LOBBY_MS + callingMs) {
-    // 2. Live Calling Phase (At least 2 tickets in the room)
-    const gameElapsed = elapsedInRound - LOBBY_MS;
-    const count = Math.min(
-      winningBallCount,
-      Math.floor(gameElapsed / BALL_INTERVAL_MS) + 1
-    );
-
+  } else if (elapsedInRound < LOBBY_MS + CALLING_MS) {
+    // 2. Live Calling Phase (45s - 95s: 20 balls @ 2.5s)
     phase = "game";
     isGameStarted = true;
     countdown = 0;
-    const slice = fullBallsSequence.slice(0, count);
-    drawnBalls = [...slice].reverse();
+    const gameElapsed = elapsedInRound - LOBBY_MS;
+    const count = Math.min(20, Math.floor(gameElapsed / BALL_INTERVAL_MS) + 1);
+    drawnBalls = fullBallsSequence.slice(0, count).reverse();
     currentBall = drawnBalls[0] || null;
   } else {
-    // 3. Victory & Payout Celebration Phase (Exactly 3 seconds)
+    // 3. Victory Celebration Phase (95s - 98s: exactly 3 seconds)
     phase = "victory";
     isGameStarted = true;
-    countdown = 0;
-    const slice = fullBallsSequence.slice(0, winningBallCount);
-    drawnBalls = [...slice].reverse();
+    countdown = Math.max(0, Math.ceil((ROUND_DURATION_MS - elapsedInRound) / 1000));
+    drawnBalls = fullBallsSequence.slice(0, 20).reverse();
     currentBall = drawnBalls[0] || null;
   }
 
