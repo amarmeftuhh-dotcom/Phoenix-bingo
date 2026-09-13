@@ -127,25 +127,8 @@ function evaluateWinner(tickets, balls) {
 }
 
 function getDeterministicOpponents(roundId) {
-  const rand = createPRNG(roundId * 433494437);
-  const count = 4 + Math.floor(rand() * 4);
-  const opponents = [];
-  const used = new Set();
-  for (let i = 0; i < count; i++) {
-    let t = Math.floor(rand() * 450) + 1;
-    while (used.has(t)) {
-      t = (t + 1) % 450 + 1;
-    }
-    used.add(t);
-    const nIdx = Math.floor(rand() * OPPONENT_NAMES.length);
-    const phone = `09${Math.floor(10 + rand() * 80)}***${Math.floor(10 + rand() * 89)}`;
-    opponents.push({
-      ticketNum: t,
-      userName: OPPONENT_NAMES[nIdx] || "ተጫዋች",
-      userPhone: phone,
-    });
-  }
-  return opponents;
+  // Only real players: no automatic fake opponents or phantom 40 Birr jackpot!
+  return [];
 }
 
 function getOrCreateBotRound(roundId) {
@@ -202,11 +185,7 @@ function getMasterRoomState() {
 
   const currentBall = drawnBalls[0] || null;
   const roundMap = getOrCreateBotRound(currentRoundId);
-  const realTickets = Array.from(roundMap.keys());
-  const opponentList = getDeterministicOpponents(currentRoundId);
-
-  const filteredOpponents = opponentList.filter((o) => !roundMap.has(o.ticketNum));
-  const allTaken = Array.from(new Set([...realTickets, ...filteredOpponents.map((o) => o.ticketNum)]));
+  const allTaken = Array.from(roundMap.keys());
 
   const details = {};
   const uniqueUsers = new Set();
@@ -215,18 +194,15 @@ function getMasterRoomState() {
     details[tNum] = { userId: info.userId, userName: info.userName, userPhone: info.userPhone };
     uniqueUsers.add(info.userId);
   }
-  for (const o of filteredOpponents) {
-    details[o.ticketNum] = { userId: `opp_${o.ticketNum}`, userName: o.userName, userPhone: o.userPhone };
-  }
 
   const { winningTicket, winningBallCount } = evaluateWinner(allTaken, balls);
-  const winnerRecord = details[winningTicket];
+  const winnerRecord = winningTicket ? details[winningTicket] : null;
   const winnerInfo = {
-    ticket: winningTicket,
-    winningBallCount,
-    name: winnerRecord?.userName || "አበበ ተፈራ",
-    phone: winnerRecord?.userPhone || "0911***89",
-    userId: winnerRecord?.userId || `opp_${winningTicket}`,
+    ticket: winningTicket || 0,
+    winningBallCount: winningBallCount || 20,
+    name: winnerRecord?.userName || (winningTicket ? "ተጫዋች" : ""),
+    phone: winnerRecord?.userPhone || "",
+    userId: winnerRecord?.userId || "",
   };
 
   const totalRoomTickets = allTaken.length;
@@ -246,7 +222,7 @@ function getMasterRoomState() {
     takenDetails: details,
     jackpot,
     winnerInfo,
-    playersCount: uniqueUsers.size + filteredOpponents.length,
+    playersCount: uniqueUsers.size,
     lobbyDuration: customLobbyMs,
   };
 }
@@ -326,7 +302,7 @@ http.createServer((req, res) => {
           const existing = roundMap.get(body.ticketNum);
           if (existing && existing.userId !== body.userId) {
             res.writeHead(200, { "Content-Type": "application/json" });
-            res.end(JSON.stringify({ success: false, error: "TICKET_ALREADY_TAKEN", ...currentState }));
+            res.end(JSON.stringify({ ...currentState, success: false, error: "TICKET_ALREADY_TAKEN" }));
             return;
           }
           roundMap.set(body.ticketNum, { userId: body.userId, userName: body.userName || "ተጫዋች", userPhone: body.userPhone || "", time: Date.now() });
