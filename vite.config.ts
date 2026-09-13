@@ -148,7 +148,11 @@ function getDeterministicOpponents(roundId: number) {
 }
 
 function liveRoomSyncPlugin(): Plugin {
-  // Store taken tickets per roundId: roundId -> Map<ticketNum, TicketRecord>
+  // Master Clock & Room Store
+  let customLobbyMs = 45000;
+  let roundOffset = 0;
+  let forceGameStartAt: number | null = null;
+
   const roundsMap = new Map<
     number,
     Map<
@@ -157,7 +161,9 @@ function liveRoomSyncPlugin(): Plugin {
     >
   >();
 
-  // Prune rounds older than 5 rounds ago to avoid memory leaks
+  // Active SSE connection clients
+  const sseClients = new Set<any>();
+
   function cleanOldRounds(latestRoundId: number) {
     if (roundsMap.size > 8) {
       for (const rId of roundsMap.keys()) {
@@ -178,98 +184,159 @@ function liveRoomSyncPlugin(): Plugin {
     return roundMap;
   }
 
+  function getMasterRoomState() {
+    const now = Date.now();
+    const roundDuration = customLobbyMs + CALLING_MS + VICTORY_MS;
+    const baseRoundId = Math.floor(now / roundDuration);
+    const currentRoundId = baseRoundId + roundOffset;
+    let elapsed = now % roundDuration;
+
+    let phase: "lobby" | "game" | "victory" = "lobby";
+    let countdown = 0;
+
+    if (forceGameStartAt && now >= forceGameStartAt && elapsed < customLobbyMs) {
+      // Admin forced early game start
+      elapsed = customLobbyMs + (now - forceGameStartAt);
+    }
+
+    const balls = getDeterministicBalls(currentRoundId);
+    let drawnBalls: number[] = [];
+
+    if (elapsed < customLobbyMs) {
+      phase = "lobby";
+      countdown = Math.max(0, Math.ceil((customLobbyMs - elapsed) / 1000));
+      drawnBalls = [];
+    } else if (elapsed < customLobbyMs + CALLING_MS) {
+      phase = "game";
+      countdown = 0;
+      const gameElapsed = elapsed - customLobbyMs;
+      const count = Math.min(20, Math.floor(gameElapsed / BALL_INTERVAL_MS) + 1);
+      drawnBalls = balls.slice(0, count).reverse();
+    } else {
+      phase = "victory";
+      countdown = Math.max(0, Math.ceil((roundDuration - elapsed) / 1000));
+      drawnBalls = balls.slice(0, 20).reverse();
+    }
+
+    const currentBall = drawnBalls[0] || null;
+    const roundMap = getOrCreateRound(currentRoundId);
+    const realTickets = Array.from(roundMap.keys());
+    const opponentList = getDeterministicOpponents(currentRoundId);
+    const filteredOpponents = opponentList.filter((o) => !roundMap.has(o.ticketNum));
+    const allTaken = Array.from(new Set([...realTickets, ...filteredOpponents.map((o) => o.ticketNum)]));
+
+    const details: Record<number, { userId: string; userName: string; userPhone?: string }> = {};
+    const uniqueUsers = new Set<string>();
+
+    for (const [tNum, info] of roundMap.entries()) {
+      details[tNum] = { userId: info.userId, userName: info.userName, userPhone: info.userPhone };
+      uniqueUsers.add(info.userId);
+    }
+    for (const o of filteredOpponents) {
+      details[o.ticketNum] = { userId: `opp_${o.ticketNum}`, userName: o.userName, userPhone: o.userPhone };
+    }
+
+    const { winningTicket, winningBallCount } = evaluateWinner(allTaken, balls);
+    const winnerRecord = details[winningTicket];
+    const winnerInfo = {
+      ticket: winningTicket,
+      winningBallCount,
+      name: winnerRecord?.userName || "አበበ ተፈራ",
+      phone: winnerRecord?.userPhone || "0911***89",
+      userId: winnerRecord?.userId || `opp_${winningTicket}`,
+    };
+
+    const totalRoomTickets = allTaken.length;
+    const jackpot = totalRoomTickets * 10;
+
+    return {
+      success: true,
+      serverTime: now,
+      roundId: currentRoundId,
+      phase,
+      countdown,
+      elapsedInRound: elapsed,
+      drawnBalls,
+      currentBall,
+      totalRoomTickets,
+      takenTickets: allTaken,
+      takenDetails: details,
+      jackpot,
+      winnerInfo,
+      playersCount: uniqueUsers.size + filteredOpponents.length,
+      lobbyDuration: customLobbyMs,
+    };
+  }
+
+  function broadcastMasterState(lastAction?: any) {
+    if (sseClients.size === 0) return;
+    const state = getMasterRoomState();
+    const payload = JSON.stringify({ ...state, lastAction });
+    const dataStr = `data: ${payload}\n\n`;
+
+    for (const client of Array.from(sseClients)) {
+      try {
+        client.write(dataStr);
+      } catch {
+        sseClients.delete(client);
+      }
+    }
+  }
+
+  // Authoritative 1000ms Server Master Clock Ticker
+  setInterval(() => {
+    broadcastMasterState({ type: "TICK" });
+  }, 1000);
+
   return {
     name: 'live-room-sync-plugin',
     configureServer(server) {
       server.middlewares.use(async (req, res, next) => {
         const url = new URL(req.url || '', `http://${req.headers.host || 'localhost'}`);
 
-        // 1. GET /api/room/state
-        if (url.pathname === '/api/room/state') {
-          const now = Date.now();
-          const currentRoundId = Math.floor(now / ROUND_DURATION_MS);
-          const elapsed = now % ROUND_DURATION_MS;
-
-          const roundMap = getOrCreateRound(currentRoundId);
-          const realTickets = Array.from(roundMap.keys());
-          const opponentList = getDeterministicOpponents(currentRoundId);
-
-          // Opponents take tickets not claimed by real users
-          const filteredOpponents = opponentList.filter((o) => !roundMap.has(o.ticketNum));
-          const allTaken = Array.from(new Set([...realTickets, ...filteredOpponents.map((o) => o.ticketNum)]));
-
-          const details: Record<number, { userId: string; userName: string; userPhone?: string }> = {};
-          const uniqueUsers = new Set<string>();
-
-          for (const [tNum, info] of roundMap.entries()) {
-            details[tNum] = { userId: info.userId, userName: info.userName, userPhone: info.userPhone };
-            uniqueUsers.add(info.userId);
-          }
-          for (const o of filteredOpponents) {
-            details[o.ticketNum] = { userId: `opp_${o.ticketNum}`, userName: o.userName, userPhone: o.userPhone };
-          }
-
-          const balls = getDeterministicBalls(currentRoundId);
-          const { winningTicket, winningBallCount } = evaluateWinner(allTaken, balls);
-
-          const winnerRecord = details[winningTicket];
-          const winnerInfo = {
-            ticket: winningTicket,
-            winningBallCount,
-            name: winnerRecord?.userName || "አበበ ተፈራ",
-            phone: winnerRecord?.userPhone || "0911***89",
-            userId: winnerRecord?.userId || `opp_${winningTicket}`,
-          };
-
-          let phase: "lobby" | "game" | "victory" = "lobby";
-          let countdown = 0;
-          let drawnBalls: number[] = [];
-
-          if (elapsed < LOBBY_MS) {
-            phase = "lobby";
-            countdown = Math.max(0, Math.ceil((LOBBY_MS - elapsed) / 1000));
-            drawnBalls = [];
-          } else if (elapsed < LOBBY_MS + CALLING_MS) {
-            phase = "game";
-            countdown = 0;
-            const gameElapsed = elapsed - LOBBY_MS;
-            const count = Math.min(20, Math.floor(gameElapsed / BALL_INTERVAL_MS) + 1);
-            drawnBalls = balls.slice(0, count).reverse();
-          } else {
-            phase = "victory";
-            countdown = Math.max(0, Math.ceil((ROUND_DURATION_MS - elapsed) / 1000));
-            drawnBalls = balls.slice(0, 20).reverse();
-          }
-
-          const currentBall = drawnBalls[0] || null;
-          const totalRoomTickets = allTaken.length;
-          const jackpot = totalRoomTickets * 10;
-
-          res.setHeader('Content-Type', 'application/json');
+        // CORS Headers for all room API routes
+        if (url.pathname.startsWith('/api/room')) {
           res.setHeader('Access-Control-Allow-Origin', '*');
-          res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
-          res.end(
-            JSON.stringify({
-              success: true,
-              serverTime: now,
-              roundId: currentRoundId,
-              phase,
-              countdown,
-              elapsedInRound: elapsed,
-              drawnBalls,
-              currentBall,
-              totalRoomTickets,
-              takenTickets: allTaken,
-              takenDetails: details,
-              jackpot,
-              winnerInfo,
-              playersCount: uniqueUsers.size + filteredOpponents.length,
-            })
-          );
+          res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+          res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+          if (req.method === 'OPTIONS') {
+            res.statusCode = 204;
+            res.end();
+            return;
+          }
+        }
+
+        // 1. GET /api/room/stream (Server-Sent Events Realtime Push to all Phones)
+        if (url.pathname === '/api/room/stream') {
+          res.writeHead(200, {
+            'Content-Type': 'text/event-stream',
+            'Cache-Control': 'no-cache, no-transform',
+            'Connection': 'keep-alive',
+            'Access-Control-Allow-Origin': '*',
+          });
+
+          // Send current state immediately
+          const initial = getMasterRoomState();
+          res.write(`data: ${JSON.stringify(initial)}\n\n`);
+
+          sseClients.add(res);
+
+          req.on('close', () => {
+            sseClients.delete(res);
+          });
           return;
         }
 
-        // 2. POST /api/room/select
+        // 2. GET /api/room/state (Authoritative Snapshot)
+        if (url.pathname === '/api/room/state') {
+          const state = getMasterRoomState();
+          res.setHeader('Content-Type', 'application/json');
+          res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+          res.end(JSON.stringify(state));
+          return;
+        }
+
+        // 3. POST /api/room/select (Claim cartela, instantly broadcast to other phones)
         if (url.pathname === '/api/room/select' && req.method === 'POST') {
           let bodyStr = '';
           req.on('data', (chunk) => {
@@ -280,25 +347,25 @@ function liveRoomSyncPlugin(): Plugin {
               const body = JSON.parse(bodyStr || '{}');
               const { roundId, ticketNum, userId, userName, userPhone } = body;
 
-              if (typeof roundId !== 'number' || typeof ticketNum !== 'number' || !userId) {
+              if (typeof ticketNum !== 'number' || !userId) {
                 res.statusCode = 400;
                 res.end(JSON.stringify({ success: false, error: 'Invalid parameters' }));
                 return;
               }
 
-              const roundMap = getOrCreateRound(roundId);
+              const currentState = getMasterRoomState();
+              const effectiveRoundId = typeof roundId === 'number' ? roundId : currentState.roundId;
+              const roundMap = getOrCreateRound(effectiveRoundId);
 
               // Check if ticket is already taken by a different user
               const existing = roundMap.get(ticketNum);
               if (existing && existing.userId !== userId) {
-                const taken = Array.from(roundMap.keys());
                 res.setHeader('Content-Type', 'application/json');
-                res.setHeader('Access-Control-Allow-Origin', '*');
                 res.end(
                   JSON.stringify({
                     success: false,
                     error: 'TICKET_ALREADY_TAKEN',
-                    takenTickets: taken,
+                    ...currentState,
                   })
                 );
                 return;
@@ -312,20 +379,17 @@ function liveRoomSyncPlugin(): Plugin {
                 time: Date.now(),
               });
 
-              const taken = Array.from(roundMap.keys());
-              const uniqueUsers = new Set(Array.from(roundMap.values()).map((v) => v.userId));
+              // Instantly broadcast to all connected phones via SSE
+              broadcastMasterState({
+                type: 'SELECT',
+                ticketNum,
+                userName: userName || 'ተጫዋች',
+                time: Date.now(),
+              });
 
+              const updatedState = getMasterRoomState();
               res.setHeader('Content-Type', 'application/json');
-              res.setHeader('Access-Control-Allow-Origin', '*');
-              res.end(
-                JSON.stringify({
-                  success: true,
-                  serverTime: Date.now(),
-                  roundId,
-                  takenTickets: taken,
-                  playersCount: uniqueUsers.size,
-                })
-              );
+              res.end(JSON.stringify(updatedState));
             } catch {
               res.statusCode = 400;
               res.end(JSON.stringify({ success: false, error: 'Bad Request' }));
@@ -334,7 +398,7 @@ function liveRoomSyncPlugin(): Plugin {
           return;
         }
 
-        // 3. POST /api/room/unselect
+        // 4. POST /api/room/unselect (Release cartela)
         if (url.pathname === '/api/room/unselect' && req.method === 'POST') {
           let bodyStr = '';
           req.on('data', (chunk) => {
@@ -345,33 +409,63 @@ function liveRoomSyncPlugin(): Plugin {
               const body = JSON.parse(bodyStr || '{}');
               const { roundId, ticketNum, userId } = body;
 
-              if (typeof roundId === 'number') {
-                const roundMap = getOrCreateRound(roundId);
-                const existing = roundMap.get(ticketNum);
-                // Allow releasing if owned or admin
-                if (!existing || !userId || existing.userId === userId) {
-                  roundMap.delete(ticketNum);
-                }
+              const currentState = getMasterRoomState();
+              const effectiveRoundId = typeof roundId === 'number' ? roundId : currentState.roundId;
+              const roundMap = getOrCreateRound(effectiveRoundId);
+              const existing = roundMap.get(ticketNum);
 
-                const taken = Array.from(roundMap.keys());
-                const uniqueUsers = new Set(Array.from(roundMap.values()).map((v) => v.userId));
-
-                res.setHeader('Content-Type', 'application/json');
-                res.setHeader('Access-Control-Allow-Origin', '*');
-                res.end(
-                  JSON.stringify({
-                    success: true,
-                    serverTime: Date.now(),
-                    roundId,
-                    takenTickets: taken,
-                    playersCount: uniqueUsers.size,
-                  })
-                );
-                return;
+              // Allow releasing if owned or admin
+              if (!existing || !userId || existing.userId === userId) {
+                roundMap.delete(ticketNum);
               }
 
+              // Broadcast change
+              broadcastMasterState({
+                type: 'UNSELECT',
+                ticketNum,
+                time: Date.now(),
+              });
+
+              const updatedState = getMasterRoomState();
+              res.setHeader('Content-Type', 'application/json');
+              res.end(JSON.stringify(updatedState));
+            } catch {
               res.statusCode = 400;
-              res.end(JSON.stringify({ success: false, error: 'Invalid roundId' }));
+              res.end(JSON.stringify({ success: false, error: 'Bad Request' }));
+            }
+          });
+          return;
+        }
+
+        // 5. POST /api/room/admin/action (Master Admin Clock & Round Control)
+        if (url.pathname === '/api/room/admin/action' && req.method === 'POST') {
+          let bodyStr = '';
+          req.on('data', (chunk) => {
+            bodyStr += chunk;
+          });
+          req.on('end', () => {
+            try {
+              const body = JSON.parse(bodyStr || '{}');
+              const { action, lobbySeconds } = body;
+
+              if (action === 'force_start') {
+                forceGameStartAt = Date.now();
+              } else if (action === 'next_round') {
+                roundOffset += 1;
+                forceGameStartAt = null;
+              } else if (action === 'set_lobby_seconds' && typeof lobbySeconds === 'number') {
+                customLobbyMs = Math.max(10000, Math.min(120000, lobbySeconds * 1000));
+              } else if (action === 'reset') {
+                forceGameStartAt = null;
+                const state = getMasterRoomState();
+                const roundMap = getOrCreateRound(state.roundId);
+                roundMap.clear();
+              }
+
+              broadcastMasterState({ type: 'ADMIN_ACTION', action, time: Date.now() });
+              const updatedState = getMasterRoomState();
+              res.setHeader('Content-Type', 'application/json');
+              res.end(JSON.stringify(updatedState));
             } catch {
               res.statusCode = 400;
               res.end(JSON.stringify({ success: false, error: 'Bad Request' }));
