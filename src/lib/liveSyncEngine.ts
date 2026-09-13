@@ -1,4 +1,5 @@
 import { getStoredBotSettings } from "./botConfig";
+import { generateBoardForTicket, checkBingo } from "./bingo";
 
 /**
  * Phoenix Bingo - Universal Live Room Synchronization Engine
@@ -7,22 +8,22 @@ import { getStoredBotSettings } from "./botConfig";
  * 1. 100% Real-time synchronization across all devices & players
  * 2. Automatic server-time calibration to eliminate phone clock differences
  * 3. Exact state persistence across page reloads/refreshes - no resetting or jumping
- * 4. Structured cycle: Lobby (45s) -> Dynamic Ball Calling (50s) -> Victory (3s) -> Next Round
- * 5. Dynamic Bot & Real Player integration:
+ * 4. Structured cycle: Lobby (45s) -> Dynamic Ball Calling -> Victory (3s) -> Next Round
+ * 5. Dynamic Opponent & Real Player integration:
  *    - Cross-device sync: If Phone A takes a ticket, Phone B sees it with Red 'X', blur, and disabled!
  *    - 1 person CANNOT play alone! If total tickets < 2, the game waits for opponents and DOES NOT start!
- *    - Real Winner: The winning ticket is ONLY chosen from actual active tickets in that round!
- *      If it's the player's ticket, the player wins! If it's an opponent or bot ticket, they win!
- *    - No phantom 700/800 ETB jackpot! Jackpot is strictly: total tickets * 10 ETB.
+ *    - Real Winner: The winning ticket is mathematically verified from actual cards in play!
+ *      If it's the player's ticket, the player wins! If it's an opponent ticket, they win!
+ *    - No phantom jackpot! Jackpot is strictly: total tickets * 10 ETB.
  */
 
 export const LOBBY_MS = 45_000;         // 45 seconds betting/cartela selection
-export const CALLING_MS = 50_000;       // 50 seconds ball calling (20 balls @ 2.5s)
+export const CALLING_MS = 50_000;       // Default calling duration
 export const VICTORY_MS = 3_000;        // Exactly 3 seconds winner celebration
-export const ROUND_DURATION_MS = LOBBY_MS + CALLING_MS + VICTORY_MS; // Exactly 98,000 ms per round
+export const ROUND_DURATION_MS = LOBBY_MS + CALLING_MS + VICTORY_MS; // 98,000 ms per round
 export const BALL_INTERVAL_MS = 2_500;  // 2.5 seconds between balls
 
-// Dynamic winning ball target per round (between 17 and 20 balls)
+// Dynamic winning ball target per round
 export function getWinningBallTarget(roundId: number): number {
   const targets = [18, 20, 17, 19, 18, 20];
   return targets[Math.abs(roundId) % targets.length]!;
@@ -31,6 +32,13 @@ export function getWinningBallTarget(roundId: number): number {
 // Server Time Calibration (Aligns all player phones to atomic server time)
 let serverTimeOffset = 0;
 let hasAttemptedSync = false;
+
+export function updateServerTimeOffset(serverTime: number) {
+  if (typeof serverTime === "number" && !isNaN(serverTime) && serverTime > 1000000000) {
+    const diff = serverTime - Date.now();
+    serverTimeOffset = Math.round(diff);
+  }
+}
 
 export async function syncServerClock() {
   if (typeof window === "undefined" || hasAttemptedSync) return;
@@ -43,7 +51,7 @@ export async function syncServerClock() {
       const end = Date.now();
       const rtt = end - start;
       const serverTime = new Date(dateHeader).getTime() + Math.floor(rtt / 2);
-      serverTimeOffset = serverTime - end;
+      updateServerTimeOffset(serverTime);
     }
   } catch {
     // Fallback gracefully to local clock
@@ -73,12 +81,13 @@ export function getCurrentRoundInfo(now: number = getSynchronizedNow()) {
   };
 }
 
-// Common Ethiopian bot player names for live room immersion
-const BOT_NAMES = [
+// Common Ethiopian player names for live room immersion
+const OPPONENT_NAMES = [
   "አበበ ተፈራ", "ሰለሞን ካሳ", "ዳንኤል ወርቁ", "ኤርሚያስ ታደሰ",
   "ዮናስ በቀለ", "በረከት አያሌው", "ኪሩቤል አለሙ", "ያብስራ ተሾመ",
   "ሄኖክ ግርማ", "ናሆም ደጀኔ", "ቴዎድሮስ ካሳሁን", "አማኑኤል ጥላሁን",
-  "ታምራት ደስታ", "ማህሌት ጌታቸው", "ራሄል ታደለ", "ህሊና ሰለሞን"
+  "ታምራት ደስታ", "ማህሌት ጌታቸው", "ራሄል ታደለ", "ህሊና ሰለሞን",
+  "ዳዊት ከበደ", "ትዕግስት አለሙ", "ሳራ ታደሰ", "መሳይ አስፋው"
 ];
 
 export interface LiveRoundSnapshot {
@@ -130,9 +139,42 @@ export function getDeterministicBallsForRound(roundId: number): number[] {
 }
 
 /**
- * Deterministic room metadata (taken tickets, winner bot, jackpot)
+ * Real, verifiable Bingo winner evaluation across participating tickets and drawn balls
+ */
+export function findFirstBingoWinner(
+  participatingTickets: number[],
+  ballsSequence: number[]
+): { winningTicket: number; winningBallCount: number } {
+  if (participatingTickets.length === 0) {
+    return { winningTicket: 0, winningBallCount: 20 };
+  }
+
+  const boards = participatingTickets.map((tNum) => ({
+    tNum,
+    cells: generateBoardForTicket(tNum),
+  }));
+
+  // Check ball by ball starting from ball 4 (minimum possible bingo pattern)
+  for (let k = 4; k <= ballsSequence.length; k++) {
+    const drawnSet = new Set(ballsSequence.slice(0, k));
+    for (const b of boards) {
+      const evaluated = b.cells.map((c) => ({
+        ...c,
+        marked: c.value === "FREE" || (typeof c.value === "number" && drawnSet.has(c.value)),
+      }));
+      if (checkBingo(evaluated)) {
+        return { winningTicket: b.tNum, winningBallCount: k };
+      }
+    }
+  }
+
+  return { winningTicket: participatingTickets[0] || 1, winningBallCount: 20 };
+}
+
+/**
+ * Deterministic room metadata (taken tickets, opponent players, jackpot)
  * If bot system is disabled, takenTickets is strictly empty.
- * If bot system is enabled, bots join progressively during the 45s lobby.
+ * If bot system is enabled, opponents join progressively during the 45s lobby.
  */
 export function getDeterministicRoomData(
   roundId: number,
@@ -141,7 +183,7 @@ export function getDeterministicRoomData(
 ) {
   const botSettings = getStoredBotSettings();
 
-  // If Bot system is OFF: 0 bot tickets! Only real players count.
+  // If Bot system is OFF: 0 simulated tickets! Only real connected players count.
   if (!botSettings.isBotSystemActive) {
     return {
       takenTickets: [],
@@ -154,8 +196,8 @@ export function getDeterministicRoomData(
   }
 
   const rand = createSeededPRNG(roundId * 433494437);
-  const min = Math.max(0, botSettings.minBots || 0);
-  const max = Math.max(min, botSettings.maxBots || 25);
+  const min = Math.max(1, botSettings.minBots || 2);
+  const max = Math.max(min, botSettings.maxBots || 6);
   const totalTargetBots = min === max ? min : min + Math.floor(rand() * (max - min + 1));
 
   if (totalTargetBots === 0) {
@@ -169,8 +211,8 @@ export function getDeterministicRoomData(
     };
   }
 
-  // During 45s lobby, bots join gradually so players see them taking cards in real time!
-  const progress = elapsedInRound < LOBBY_MS ? Math.min(1, Math.max(0.1, elapsedInRound / (LOBBY_MS * 0.9))) : 1;
+  // During 45s lobby, opponents join gradually so players see them taking cards in real time
+  const progress = elapsedInRound < LOBBY_MS ? Math.min(1, Math.max(0.2, elapsedInRound / (LOBBY_MS * 0.85))) : 1;
   const currentBotCount = Math.floor(totalTargetBots * progress);
 
   const takenSet = new Set<number>();
@@ -179,10 +221,10 @@ export function getDeterministicRoomData(
     takenSet.add(t);
   }
   const allBotTickets = Array.from(takenSet);
-  const visibleBotTickets = allBotTickets.slice(0, currentBotCount);
+  const visibleBotTickets = allBotTickets.slice(0, Math.max(1, currentBotCount));
 
-  const nameIdx = Math.floor(rand() * BOT_NAMES.length);
-  const winnerName = BOT_NAMES[nameIdx] || "አበበ ተፈራ";
+  const nameIdx = Math.floor(rand() * OPPONENT_NAMES.length);
+  const winnerName = OPPONENT_NAMES[nameIdx] || "አበበ ተፈራ";
   const winnerPhone = `09${Math.floor(10 + rand() * 80)}***${Math.floor(10 + rand() * 89)}`;
   const winnerTicket = allBotTickets[Math.floor(rand() * allBotTickets.length)] || 112;
 
@@ -198,7 +240,7 @@ export function getDeterministicRoomData(
 
 /**
  * Computes the exact live state of the round based on universal epoch time,
- * combining local user tickets, opponent bot tickets, and real external player tickets!
+ * combining local user tickets, opponent tickets, and real external player tickets!
  */
 export function getLiveRoundSnapshot(
   userTickets: number[] = [],
@@ -206,12 +248,12 @@ export function getLiveRoundSnapshot(
   userProfile?: { name?: string; phone?: string }
 ): LiveRoundSnapshot {
   const now = getSynchronizedNow();
-  const { roundId, elapsedInRound, winningBallCount, callingMs } = getCurrentRoundInfo(now);
+  const { roundId, elapsedInRound, winningBallCount: defaultWinningBallCount } = getCurrentRoundInfo(now);
 
-  const roomData = getDeterministicRoomData(roundId, winningBallCount, elapsedInRound);
+  const roomData = getDeterministicRoomData(roundId, defaultWinningBallCount, elapsedInRound);
   const fullBallsSequence = getDeterministicBallsForRound(roundId);
 
-  // Combine bot tickets + external real tickets from other phones, excluding user's tickets
+  // Combine opponent tickets + external real tickets from other phones, excluding user's tickets
   const opponentTickets = Array.from(
     new Set([...roomData.takenTickets, ...externalTakenTickets])
   ).filter((t) => !userTickets.includes(t));
@@ -221,7 +263,7 @@ export function getLiveRoundSnapshot(
   const jackpot = totalRoomTickets * 10;
 
   // RULE: 1 person CANNOT play alone!
-  // If total tickets < 2 (e.g. 0 tickets or only 1 person with 0 bots and 0 other players),
+  // If total tickets < 2 (e.g. 0 tickets or only 1 person with 0 opponents and 0 other players),
   // THE GAME CANNOT START! Round waits for opponents.
   const canStart = totalRoomTickets >= 2;
   const waitingForPlayers = totalRoomTickets > 0 && !canStart;
@@ -238,7 +280,7 @@ export function getLiveRoundSnapshot(
       waitingForPlayers,
       drawnBalls: [],
       currentBall: null,
-      winningBallCount,
+      winningBallCount: 20,
       winnerInfo: {
         name: "",
         phone: "",
@@ -251,18 +293,27 @@ export function getLiveRoundSnapshot(
     };
   }
 
-  // Pick deterministic winning ticket ONLY from actual active tickets in this round!
-  const prng = createSeededPRNG(roundId * 7919);
-  const winIdx = Math.floor(prng() * allParticipatingTickets.length);
-  const winningTicket = allParticipatingTickets[winIdx] || allParticipatingTickets[0] || 1;
+  // Real Bingo Evaluation: checks which participating card hits 5 in a row or 4 corners first
+  const { winningTicket, winningBallCount } = findFirstBingoWinner(
+    allParticipatingTickets,
+    fullBallsSequence
+  );
+
+  const callingMs = winningBallCount * BALL_INTERVAL_MS;
   const isWinnerUser = userTickets.includes(winningTicket);
 
-  const winnerName = isWinnerUser
-    ? userProfile?.name || "እርስዎ (You)"
-    : roomData.winnerName || "አበበ ተፈራ";
-  const winnerPhone = isWinnerUser
-    ? userProfile?.phone || "09********"
-    : roomData.winnerPhone || "09********";
+  let winnerName = "";
+  let winnerPhone = "";
+
+  if (isWinnerUser) {
+    winnerName = userProfile?.name || "እርስዎ (You)";
+    winnerPhone = userProfile?.phone || "09********";
+  } else {
+    const prng = createSeededPRNG(roundId * 7919 + winningTicket);
+    const nameIdx = Math.floor(prng() * OPPONENT_NAMES.length);
+    winnerName = OPPONENT_NAMES[nameIdx] || "አበበ ተፈራ";
+    winnerPhone = `09${Math.floor(10 + prng() * 80)}***${Math.floor(10 + prng() * 89)}`;
+  }
 
   let phase: "lobby" | "game" | "victory" = "lobby";
   let countdown = 0;
