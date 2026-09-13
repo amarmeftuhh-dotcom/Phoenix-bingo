@@ -251,16 +251,17 @@ export async function claimRemoteTicket(
     });
     if (res.ok) {
       const data = await res.json();
-      if (data.success && Array.isArray(data.takenTickets)) {
-        cachedServerTaken = data.takenTickets;
-        notifyListeners(data);
-        return true;
-      } else if (data.error === "TICKET_ALREADY_TAKEN") {
+      if (data.error === "TICKET_ALREADY_TAKEN" || data.success === false) {
         if (Array.isArray(data.takenTickets)) {
           cachedServerTaken = data.takenTickets;
           notifyListeners(data);
         }
         return false;
+      }
+      if (data.success && Array.isArray(data.takenTickets)) {
+        cachedServerTaken = data.takenTickets;
+        notifyListeners(data);
+        return true;
       }
     }
   } catch {
