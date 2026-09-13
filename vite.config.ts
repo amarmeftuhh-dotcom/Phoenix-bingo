@@ -121,32 +121,17 @@ function evaluateWinner(tickets: number[], balls: number[]) {
       }
     }
   }
+  // Default to ticket with closest match at ball 20
   return { winningTicket: tickets[0] || 1, winningBallCount: 20 };
 }
 
-function getDeterministicOpponents(roundId: number) {
-  const rand = createPRNG(roundId * 433494437);
-  const count = 4 + Math.floor(rand() * 4);
-  const opponents: { ticketNum: number; userName: string; userPhone: string }[] = [];
-  const used = new Set<number>();
-  for (let i = 0; i < count; i++) {
-    let t = Math.floor(rand() * 450) + 1;
-    while (used.has(t)) {
-      t = (t + 1) % 450 + 1;
-    }
-    used.add(t);
-    const nIdx = Math.floor(rand() * OPPONENT_NAMES.length);
-    const phone = `09${Math.floor(10 + rand() * 80)}***${Math.floor(10 + rand() * 89)}`;
-    opponents.push({
-      ticketNum: t,
-      userName: OPPONENT_NAMES[nIdx] || "ተጫዋች",
-      userPhone: phone,
-    });
-  }
-  return opponents;
+function getDeterministicOpponents(_roundId: number) {
+  // Only real players: no automatic fake opponents or phantom 40 Birr jackpot!
+  return [];
 }
 
 function liveRoomSyncPlugin(): Plugin {
+  // Master Clock & Room Store
   let customLobbyMs = 45000;
   let roundOffset = 0;
   let forceGameStartAt: number | null = null;
@@ -159,6 +144,7 @@ function liveRoomSyncPlugin(): Plugin {
     >
   >();
 
+  // Active SSE connection clients
   const sseClients = new Set<any>();
 
   function cleanOldRounds(latestRoundId: number) {
@@ -192,6 +178,7 @@ function liveRoomSyncPlugin(): Plugin {
     let countdown = 0;
 
     if (forceGameStartAt && now >= forceGameStartAt && elapsed < customLobbyMs) {
+      // Admin forced early game start
       elapsed = customLobbyMs + (now - forceGameStartAt);
     }
 
@@ -216,10 +203,7 @@ function liveRoomSyncPlugin(): Plugin {
 
     const currentBall = drawnBalls[0] || null;
     const roundMap = getOrCreateRound(currentRoundId);
-    const realTickets = Array.from(roundMap.keys());
-    const opponentList = getDeterministicOpponents(currentRoundId);
-    const filteredOpponents = opponentList.filter((o) => !roundMap.has(o.ticketNum));
-    const allTaken = Array.from(new Set([...realTickets, ...filteredOpponents.map((o) => o.ticketNum)]));
+    const allTaken = Array.from(roundMap.keys());
 
     const details: Record<number, { userId: string; userName: string; userPhone?: string }> = {};
     const uniqueUsers = new Set<string>();
@@ -228,18 +212,15 @@ function liveRoomSyncPlugin(): Plugin {
       details[tNum] = { userId: info.userId, userName: info.userName, userPhone: info.userPhone };
       uniqueUsers.add(info.userId);
     }
-    for (const o of filteredOpponents) {
-      details[o.ticketNum] = { userId: `opp_${o.ticketNum}`, userName: o.userName, userPhone: o.userPhone };
-    }
 
     const { winningTicket, winningBallCount } = evaluateWinner(allTaken, balls);
-    const winnerRecord = details[winningTicket];
+    const winnerRecord = winningTicket ? details[winningTicket] : null;
     const winnerInfo = {
-      ticket: winningTicket,
-      winningBallCount,
-      name: winnerRecord?.userName || "አበበ ተፈራ",
-      phone: winnerRecord?.userPhone || "0911***89",
-      userId: winnerRecord?.userId || `opp_${winningTicket}`,
+      ticket: winningTicket || 0,
+      winningBallCount: winningBallCount || 20,
+      name: winnerRecord?.userName || (winningTicket ? "ተጫዋች" : ""),
+      phone: winnerRecord?.userPhone || "",
+      userId: winnerRecord?.userId || "",
     };
 
     const totalRoomTickets = allTaken.length;
@@ -259,7 +240,7 @@ function liveRoomSyncPlugin(): Plugin {
       takenDetails: details,
       jackpot,
       winnerInfo,
-      playersCount: uniqueUsers.size + filteredOpponents.length,
+      playersCount: uniqueUsers.size,
       lobbyDuration: customLobbyMs,
     };
   }
@@ -283,6 +264,7 @@ function liveRoomSyncPlugin(): Plugin {
     name: 'live-room-sync-plugin',
     apply: 'serve',
     configureServer(server) {
+      // Authoritative 1000ms Server Master Clock Ticker (Only runs during dev server)
       const ticker = setInterval(() => {
         broadcastMasterState({ type: "TICK" });
       }, 1000);
@@ -295,6 +277,7 @@ function liveRoomSyncPlugin(): Plugin {
       server.middlewares.use(async (req, res, next) => {
         const url = new URL(req.url || '', `http://${req.headers.host || 'localhost'}`);
 
+        // CORS Headers for all room API routes
         if (url.pathname.startsWith('/api/room')) {
           res.setHeader('Access-Control-Allow-Origin', '*');
           res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
@@ -306,6 +289,7 @@ function liveRoomSyncPlugin(): Plugin {
           }
         }
 
+        // 1. GET /api/room/stream (Server-Sent Events Realtime Push to all Phones)
         if (url.pathname === '/api/room/stream') {
           res.writeHead(200, {
             'Content-Type': 'text/event-stream',
@@ -314,6 +298,7 @@ function liveRoomSyncPlugin(): Plugin {
             'Access-Control-Allow-Origin': '*',
           });
 
+          // Send current state immediately
           const initial = getMasterRoomState();
           res.write(`data: ${JSON.stringify(initial)}\n\n`);
 
@@ -325,6 +310,7 @@ function liveRoomSyncPlugin(): Plugin {
           return;
         }
 
+        // 2. GET /api/room/state (Authoritative Snapshot)
         if (url.pathname === '/api/room/state') {
           const state = getMasterRoomState();
           res.setHeader('Content-Type', 'application/json');
@@ -333,6 +319,7 @@ function liveRoomSyncPlugin(): Plugin {
           return;
         }
 
+        // 3. POST /api/room/select (Claim cartela, instantly broadcast to other phones)
         if (url.pathname === '/api/room/select' && req.method === 'POST') {
           let bodyStr = '';
           req.on('data', (chunk) => {
@@ -353,19 +340,21 @@ function liveRoomSyncPlugin(): Plugin {
               const effectiveRoundId = typeof roundId === 'number' ? roundId : currentState.roundId;
               const roundMap = getOrCreateRound(effectiveRoundId);
 
+              // Check if ticket is already taken by a different user
               const existing = roundMap.get(ticketNum);
               if (existing && existing.userId !== userId) {
                 res.setHeader('Content-Type', 'application/json');
                 res.end(
                   JSON.stringify({
+                    ...currentState,
                     success: false,
                     error: 'TICKET_ALREADY_TAKEN',
-                    ...currentState,
                   })
                 );
                 return;
               }
 
+              // Claim ticket
               roundMap.set(ticketNum, {
                 userId,
                 userName: userName || 'ተጫዋች',
@@ -373,6 +362,7 @@ function liveRoomSyncPlugin(): Plugin {
                 time: Date.now(),
               });
 
+              // Instantly broadcast to all connected phones via SSE
               broadcastMasterState({
                 type: 'SELECT',
                 ticketNum,
@@ -391,6 +381,7 @@ function liveRoomSyncPlugin(): Plugin {
           return;
         }
 
+        // 4. POST /api/room/unselect (Release cartela)
         if (url.pathname === '/api/room/unselect' && req.method === 'POST') {
           let bodyStr = '';
           req.on('data', (chunk) => {
@@ -406,10 +397,12 @@ function liveRoomSyncPlugin(): Plugin {
               const roundMap = getOrCreateRound(effectiveRoundId);
               const existing = roundMap.get(ticketNum);
 
+              // Allow releasing if owned or admin
               if (!existing || !userId || existing.userId === userId) {
                 roundMap.delete(ticketNum);
               }
 
+              // Broadcast change
               broadcastMasterState({
                 type: 'UNSELECT',
                 ticketNum,
@@ -427,6 +420,7 @@ function liveRoomSyncPlugin(): Plugin {
           return;
         }
 
+        // 5. POST /api/room/admin/action (Master Admin Clock & Round Control)
         if (url.pathname === '/api/room/admin/action' && req.method === 'POST') {
           let bodyStr = '';
           req.on('data', (chunk) => {
