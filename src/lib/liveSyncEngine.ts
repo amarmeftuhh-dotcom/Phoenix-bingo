@@ -239,8 +239,16 @@ export function getDeterministicRoomData(
 }
 
 export function getDeterministicOpponents(roundId: number) {
+  const botSettings = getStoredBotSettings();
+  if (!botSettings.isBotSystemActive) {
+    return [];
+  }
+  const min = Math.max(0, botSettings.minBots || 0);
+  const max = Math.max(min, botSettings.maxBots || 0);
+  if (max === 0) return [];
+
   const rand = createSeededPRNG(roundId * 433494437);
-  const count = 4 + Math.floor(rand() * 4); // 4 to 7 opponent tickets
+  const count = min === max ? min : min + Math.floor(rand() * (max - min + 1));
   const opponents: { ticketNum: number; userName: string; userPhone: string }[] = [];
   const used = new Set<number>();
   for (let i = 0; i < count; i++) {
