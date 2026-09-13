@@ -162,6 +162,114 @@ function getOrCreateBotRound(roundId) {
   return roundMap;
 }
 
+let customLobbyMs = 45000;
+let roundOffset = 0;
+let forceGameStartAt = null;
+const sseClients = new Set();
+
+function getMasterRoomState() {
+  const now = Date.now();
+  const roundDuration = customLobbyMs + CALLING_MS + VICTORY_MS;
+  const baseRoundId = Math.floor(now / roundDuration);
+  const currentRoundId = baseRoundId + roundOffset;
+  let elapsed = now % roundDuration;
+
+  let phase = "lobby";
+  let countdown = 0;
+
+  if (forceGameStartAt && now >= forceGameStartAt && elapsed < customLobbyMs) {
+    elapsed = customLobbyMs + (now - forceGameStartAt);
+  }
+
+  const balls = getDeterministicBalls(currentRoundId);
+  let drawnBalls = [];
+
+  if (elapsed < customLobbyMs) {
+    phase = "lobby";
+    countdown = Math.max(0, Math.ceil((customLobbyMs - elapsed) / 1000));
+    drawnBalls = [];
+  } else if (elapsed < customLobbyMs + CALLING_MS) {
+    phase = "game";
+    countdown = 0;
+    const gameElapsed = elapsed - customLobbyMs;
+    const count = Math.min(20, Math.floor(gameElapsed / BALL_INTERVAL_MS) + 1);
+    drawnBalls = balls.slice(0, count).reverse();
+  } else {
+    phase = "victory";
+    countdown = Math.max(0, Math.ceil((roundDuration - elapsed) / 1000));
+    drawnBalls = balls.slice(0, 20).reverse();
+  }
+
+  const currentBall = drawnBalls[0] || null;
+  const roundMap = getOrCreateBotRound(currentRoundId);
+  const realTickets = Array.from(roundMap.keys());
+  const opponentList = getDeterministicOpponents(currentRoundId);
+
+  const filteredOpponents = opponentList.filter((o) => !roundMap.has(o.ticketNum));
+  const allTaken = Array.from(new Set([...realTickets, ...filteredOpponents.map((o) => o.ticketNum)]));
+
+  const details = {};
+  const uniqueUsers = new Set();
+
+  for (const [tNum, info] of roundMap.entries()) {
+    details[tNum] = { userId: info.userId, userName: info.userName, userPhone: info.userPhone };
+    uniqueUsers.add(info.userId);
+  }
+  for (const o of filteredOpponents) {
+    details[o.ticketNum] = { userId: `opp_${o.ticketNum}`, userName: o.userName, userPhone: o.userPhone };
+  }
+
+  const { winningTicket, winningBallCount } = evaluateWinner(allTaken, balls);
+  const winnerRecord = details[winningTicket];
+  const winnerInfo = {
+    ticket: winningTicket,
+    winningBallCount,
+    name: winnerRecord?.userName || "አበበ ተፈራ",
+    phone: winnerRecord?.userPhone || "0911***89",
+    userId: winnerRecord?.userId || `opp_${winningTicket}`,
+  };
+
+  const totalRoomTickets = allTaken.length;
+  const jackpot = totalRoomTickets * 10;
+
+  return {
+    success: true,
+    serverTime: now,
+    roundId: currentRoundId,
+    phase,
+    countdown,
+    elapsedInRound: elapsed,
+    drawnBalls,
+    currentBall,
+    totalRoomTickets,
+    takenTickets: allTaken,
+    takenDetails: details,
+    jackpot,
+    winnerInfo,
+    playersCount: uniqueUsers.size + filteredOpponents.length,
+    lobbyDuration: customLobbyMs,
+  };
+}
+
+function broadcastMasterState(lastAction) {
+  if (sseClients.size === 0) return;
+  const state = getMasterRoomState();
+  const payload = JSON.stringify({ ...state, lastAction });
+  const dataStr = `data: ${payload}\n\n`;
+
+  for (const client of Array.from(sseClients)) {
+    try {
+      client.write(dataStr);
+    } catch {
+      sseClients.delete(client);
+    }
+  }
+}
+
+setInterval(() => {
+  broadcastMasterState({ type: "TICK" });
+}, 1000);
+
 http.createServer((req, res) => {
   // CORS Headers
   res.setHeader("Access-Control-Allow-Origin", "*");
@@ -176,85 +284,31 @@ http.createServer((req, res) => {
 
   const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
 
+  if (url.pathname === "/api/room/stream") {
+    res.writeHead(200, {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache, no-transform",
+      "Connection": "keep-alive",
+      "Access-Control-Allow-Origin": "*",
+    });
+
+    const initial = getMasterRoomState();
+    res.write(`data: ${JSON.stringify(initial)}\n\n`);
+    sseClients.add(res);
+
+    req.on("close", () => {
+      sseClients.delete(res);
+    });
+    return;
+  }
+
   if (url.pathname === "/api/room/state") {
-    const now = Date.now();
-    const currentRoundId = Math.floor(now / ROUND_DURATION_MS);
-    const elapsed = now % ROUND_DURATION_MS;
-
-    const roundMap = getOrCreateBotRound(currentRoundId);
-    const realTickets = Array.from(roundMap.keys());
-    const opponentList = getDeterministicOpponents(currentRoundId);
-
-    const filteredOpponents = opponentList.filter((o) => !roundMap.has(o.ticketNum));
-    const allTaken = Array.from(new Set([...realTickets, ...filteredOpponents.map((o) => o.ticketNum)]));
-
-    const details = {};
-    const uniqueUsers = new Set();
-
-    for (const [tNum, info] of roundMap.entries()) {
-      details[tNum] = { userId: info.userId, userName: info.userName, userPhone: info.userPhone };
-      uniqueUsers.add(info.userId);
-    }
-    for (const o of filteredOpponents) {
-      details[o.ticketNum] = { userId: `opp_${o.ticketNum}`, userName: o.userName, userPhone: o.userPhone };
-    }
-
-    const balls = getDeterministicBalls(currentRoundId);
-    const { winningTicket, winningBallCount } = evaluateWinner(allTaken, balls);
-
-    const winnerRecord = details[winningTicket];
-    const winnerInfo = {
-      ticket: winningTicket,
-      winningBallCount,
-      name: winnerRecord?.userName || "አበበ ተፈራ",
-      phone: winnerRecord?.userPhone || "0911***89",
-      userId: winnerRecord?.userId || `opp_${winningTicket}`,
-    };
-
-    let phase = "lobby";
-    let countdown = 0;
-    let drawnBalls = [];
-
-    if (elapsed < LOBBY_MS) {
-      phase = "lobby";
-      countdown = Math.max(0, Math.ceil((LOBBY_MS - elapsed) / 1000));
-      drawnBalls = [];
-    } else if (elapsed < LOBBY_MS + CALLING_MS) {
-      phase = "game";
-      countdown = 0;
-      const gameElapsed = elapsed - LOBBY_MS;
-      const count = Math.min(20, Math.floor(gameElapsed / BALL_INTERVAL_MS) + 1);
-      drawnBalls = balls.slice(0, count).reverse();
-    } else {
-      phase = "victory";
-      countdown = Math.max(0, Math.ceil((ROUND_DURATION_MS - elapsed) / 1000));
-      drawnBalls = balls.slice(0, 20).reverse();
-    }
-
-    const currentBall = drawnBalls[0] || null;
-    const totalRoomTickets = allTaken.length;
-    const jackpot = totalRoomTickets * 10;
-
+    const state = getMasterRoomState();
     res.writeHead(200, {
       "Content-Type": "application/json",
       "Cache-Control": "no-store, no-cache, must-revalidate",
     });
-    res.end(JSON.stringify({
-      success: true,
-      serverTime: now,
-      roundId: currentRoundId,
-      phase,
-      countdown,
-      elapsedInRound: elapsed,
-      drawnBalls,
-      currentBall,
-      totalRoomTickets,
-      takenTickets: allTaken,
-      takenDetails: details,
-      jackpot,
-      winnerInfo,
-      playersCount: uniqueUsers.size + filteredOpponents.length,
-    }));
+    res.end(JSON.stringify(state));
     return;
   }
 
@@ -264,23 +318,24 @@ http.createServer((req, res) => {
     req.on("end", () => {
       try {
         const body = JSON.parse(bodyStr || "{}");
-        const roundId = typeof body.roundId === "number" ? body.roundId : 0;
+        const currentState = getMasterRoomState();
+        const roundId = typeof body.roundId === "number" ? body.roundId : currentState.roundId;
         const roundMap = getOrCreateBotRound(roundId);
 
         if (body.ticketNum && body.userId) {
           const existing = roundMap.get(body.ticketNum);
           if (existing && existing.userId !== body.userId) {
-            const taken = Array.from(roundMap.keys());
             res.writeHead(200, { "Content-Type": "application/json" });
-            res.end(JSON.stringify({ success: false, error: "TICKET_ALREADY_TAKEN", takenTickets: taken }));
+            res.end(JSON.stringify({ success: false, error: "TICKET_ALREADY_TAKEN", ...currentState }));
             return;
           }
-          roundMap.set(body.ticketNum, { userId: body.userId, name: body.userName || "ተጫዋች", time: Date.now() });
+          roundMap.set(body.ticketNum, { userId: body.userId, userName: body.userName || "ተጫዋች", userPhone: body.userPhone || "", time: Date.now() });
         }
-        const taken = Array.from(roundMap.keys());
-        const uniqueUsers = new Set(Array.from(roundMap.values()).map((v) => v.userId));
+
+        broadcastMasterState({ type: "SELECT", ticketNum: body.ticketNum, userName: body.userName || "ተጫዋች", time: Date.now() });
+        const updatedState = getMasterRoomState();
         res.writeHead(200, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ success: true, serverTime: Date.now(), roundId, takenTickets: taken, playersCount: uniqueUsers.size }));
+        res.end(JSON.stringify(updatedState));
       } catch {
         res.writeHead(400, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ success: false }));
@@ -295,15 +350,51 @@ http.createServer((req, res) => {
     req.on("end", () => {
       try {
         const body = JSON.parse(bodyStr || "{}");
-        const roundId = typeof body.roundId === "number" ? body.roundId : 0;
+        const currentState = getMasterRoomState();
+        const roundId = typeof body.roundId === "number" ? body.roundId : currentState.roundId;
         const roundMap = getOrCreateBotRound(roundId);
         if (body.ticketNum) {
           roundMap.delete(body.ticketNum);
         }
-        const taken = Array.from(roundMap.keys());
-        const uniqueUsers = new Set(Array.from(roundMap.values()).map((v) => v.userId));
+
+        broadcastMasterState({ type: "UNSELECT", ticketNum: body.ticketNum, time: Date.now() });
+        const updatedState = getMasterRoomState();
         res.writeHead(200, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ success: true, serverTime: Date.now(), roundId, takenTickets: taken, playersCount: uniqueUsers.size }));
+        res.end(JSON.stringify(updatedState));
+      } catch {
+        res.writeHead(400, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ success: false }));
+      }
+    });
+    return;
+  }
+
+  if (url.pathname === "/api/room/admin/action" && req.method === "POST") {
+    let bodyStr = "";
+    req.on("data", (chunk) => { bodyStr += chunk; });
+    req.on("end", () => {
+      try {
+        const body = JSON.parse(bodyStr || "{}");
+        const { action, lobbySeconds } = body;
+
+        if (action === "force_start") {
+          forceGameStartAt = Date.now();
+        } else if (action === "next_round") {
+          roundOffset += 1;
+          forceGameStartAt = null;
+        } else if (action === "set_lobby_seconds" && typeof lobbySeconds === "number") {
+          customLobbyMs = Math.max(10000, Math.min(120000, lobbySeconds * 1000));
+        } else if (action === "reset") {
+          forceGameStartAt = null;
+          const state = getMasterRoomState();
+          const roundMap = getOrCreateBotRound(state.roundId);
+          roundMap.clear();
+        }
+
+        broadcastMasterState({ type: "ADMIN_ACTION", action, time: Date.now() });
+        const updatedState = getMasterRoomState();
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify(updatedState));
       } catch {
         res.writeHead(400, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ success: false }));
