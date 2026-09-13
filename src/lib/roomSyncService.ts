@@ -6,6 +6,8 @@
  * - Server Polling (/api/room/...) for cross-device sync between real phones
  */
 
+import { updateServerTimeOffset } from "./liveSyncEngine";
+
 export interface RemoteTicket {
   ticketNum: number;
   userId: string;
@@ -43,7 +45,30 @@ try {
   }
 } catch {}
 
-type RoomListener = (data: { roundId: number; takenTickets: number[]; playersCount: number }) => void;
+export interface ServerLiveRoomData {
+  success?: boolean;
+  serverTime: number;
+  roundId: number;
+  phase: "lobby" | "game" | "victory";
+  countdown: number;
+  elapsedInRound: number;
+  drawnBalls: number[];
+  currentBall: number | null;
+  totalRoomTickets: number;
+  takenTickets: number[];
+  takenDetails: Record<number, { userId: string; userName: string; userPhone?: string }>;
+  jackpot: number;
+  winnerInfo: {
+    ticket: number;
+    winningBallCount: number;
+    name: string;
+    phone: string;
+    userId: string;
+  };
+  playersCount: number;
+}
+
+export type RoomListener = (data: ServerLiveRoomData) => void;
 const listeners = new Set<RoomListener>();
 
 export function subscribeRoomSync(listener: RoomListener) {
@@ -53,19 +78,57 @@ export function subscribeRoomSync(listener: RoomListener) {
   };
 }
 
-function notifyListeners(roundId: number, takenTickets: number[], playersCount: number) {
+let latestServerState: ServerLiveRoomData | null = null;
+
+export function getLatestServerState(): ServerLiveRoomData | null {
+  return latestServerState;
+}
+
+function notifyListeners(data: ServerLiveRoomData) {
+  latestServerState = data;
   listeners.forEach((fn) => {
     try {
-      fn({ roundId, takenTickets, playersCount });
+      fn(data);
     } catch {}
   });
+}
+
+function notifyListenersWithTickets(roundId: number, takenTickets: number[], playersCount: number = 1) {
+  if (latestServerState && latestServerState.roundId === roundId) {
+    const updated: ServerLiveRoomData = {
+      ...latestServerState,
+      takenTickets,
+      totalRoomTickets: takenTickets.length,
+      jackpot: takenTickets.length * 10,
+      playersCount,
+    };
+    notifyListeners(updated);
+  } else {
+    const partial: ServerLiveRoomData = {
+      serverTime: Date.now(),
+      roundId,
+      phase: "lobby",
+      countdown: 30,
+      elapsedInRound: 0,
+      drawnBalls: [],
+      currentBall: null,
+      totalRoomTickets: takenTickets.length,
+      takenTickets,
+      takenDetails: {},
+      jackpot: takenTickets.length * 10,
+      winnerInfo: { ticket: 0, winningBallCount: 20, name: "", phone: "", userId: "" },
+      playersCount,
+    };
+    notifyListeners(partial);
+  }
 }
 
 if (syncChannel) {
   syncChannel.onmessage = (event) => {
     const data = event.data;
     if (data && typeof data.roundId === "number" && Array.isArray(data.takenTickets)) {
-      notifyListeners(data.roundId, data.takenTickets, data.playersCount || 1);
+      cachedServerTaken = data.takenTickets;
+      notifyListenersWithTickets(data.roundId, data.takenTickets, data.playersCount || 1);
     }
   };
 }
@@ -77,34 +140,29 @@ let lastFetchedRoundId = -1;
 /**
  * Polls the backend server for live room state
  */
-export async function fetchServerRoomState(roundId: number): Promise<{
-  takenTickets: number[];
-  playersCount: number;
-}> {
+export async function fetchServerRoomState(roundId?: number): Promise<ServerLiveRoomData | null> {
   try {
     const myId = getDeviceId();
-    const res = await fetch(`/api/room/state?roundId=${roundId}&userId=${encodeURIComponent(myId)}`, {
+    const query = roundId ? `?roundId=${roundId}&userId=${encodeURIComponent(myId)}` : `?userId=${encodeURIComponent(myId)}`;
+    const res = await fetch(`/api/room/state${query}`, {
       cache: "no-store",
     });
     if (!res.ok) throw new Error("Server not responding");
-    const data = await res.json();
-    if (data && Array.isArray(data.takenTickets)) {
+    const data: ServerLiveRoomData = await res.json();
+    if (data && Array.isArray(data.takenTickets) && typeof data.roundId === "number") {
       cachedServerTaken = data.takenTickets;
-      lastFetchedRoundId = roundId;
-      notifyListeners(roundId, data.takenTickets, data.playersCount || 1);
-      return {
-        takenTickets: data.takenTickets,
-        playersCount: data.playersCount || 1,
-      };
+      lastFetchedRoundId = data.roundId;
+      if (typeof data.serverTime === "number") {
+        updateServerTimeOffset(data.serverTime);
+      }
+      notifyListeners(data);
+      return data;
     }
   } catch {
     // Network/API not ready, fallback to cached
   }
 
-  return {
-    takenTickets: cachedServerTaken,
-    playersCount: 1,
-  };
+  return latestServerState;
 }
 
 /**
@@ -118,6 +176,11 @@ export async function claimRemoteTicket(
 ): Promise<boolean> {
   const myId = getDeviceId();
 
+  // Optimistically register locally
+  if (!cachedServerTaken.includes(ticketNum)) {
+    cachedServerTaken = [...cachedServerTaken, ticketNum];
+  }
+
   // 1. Broadcast locally immediately
   if (syncChannel) {
     try {
@@ -126,10 +189,11 @@ export async function claimRemoteTicket(
         roundId,
         ticketNum,
         userId: myId,
-        takenTickets: Array.from(new Set([...cachedServerTaken, ticketNum])),
+        takenTickets: cachedServerTaken,
       });
     } catch {}
   }
+  notifyListenersWithTickets(roundId, cachedServerTaken, 1);
 
   // 2. Send to server
   try {
@@ -146,11 +210,21 @@ export async function claimRemoteTicket(
     });
     if (res.ok) {
       const data = await res.json();
-      if (Array.isArray(data.takenTickets)) {
+      if (data.success && Array.isArray(data.takenTickets)) {
         cachedServerTaken = data.takenTickets;
-        notifyListeners(roundId, data.takenTickets, data.playersCount || 1);
+        if (typeof data.serverTime === "number") {
+          updateServerTimeOffset(data.serverTime);
+        }
+        notifyListenersWithTickets(roundId, data.takenTickets, data.playersCount || 1);
+        return true;
+      } else if (data.error === "TICKET_ALREADY_TAKEN") {
+        // Someone else got it first! Revert local cache
+        if (Array.isArray(data.takenTickets)) {
+          cachedServerTaken = data.takenTickets;
+          notifyListenersWithTickets(roundId, data.takenTickets, 1);
+        }
+        return false;
       }
-      return true;
     }
   } catch {
     // Fallback gracefully
@@ -164,19 +238,21 @@ export async function claimRemoteTicket(
 export async function releaseRemoteTicket(roundId: number, ticketNum: number): Promise<boolean> {
   const myId = getDeviceId();
 
+  cachedServerTaken = cachedServerTaken.filter((t) => t !== ticketNum);
+
   // 1. Broadcast locally
   if (syncChannel) {
     try {
-      const next = cachedServerTaken.filter((t) => t !== ticketNum);
       syncChannel.postMessage({
         type: "RELEASE_TICKET",
         roundId,
         ticketNum,
         userId: myId,
-        takenTickets: next,
+        takenTickets: cachedServerTaken,
       });
     } catch {}
   }
+  notifyListenersWithTickets(roundId, cachedServerTaken, 1);
 
   // 2. Send to server
   try {
@@ -193,7 +269,10 @@ export async function releaseRemoteTicket(roundId: number, ticketNum: number): P
       const data = await res.json();
       if (Array.isArray(data.takenTickets)) {
         cachedServerTaken = data.takenTickets;
-        notifyListeners(roundId, data.takenTickets, data.playersCount || 1);
+        if (typeof data.serverTime === "number") {
+          updateServerTimeOffset(data.serverTime);
+        }
+        notifyListenersWithTickets(roundId, data.takenTickets, data.playersCount || 1);
       }
       return true;
     }
