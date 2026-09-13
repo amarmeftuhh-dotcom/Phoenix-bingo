@@ -310,11 +310,17 @@ export function App() {
       const effectivePhase = serverState?.phase ?? snap.phase;
       const effectiveCountdown = serverState?.countdown ?? snap.countdown;
       const effectiveDrawnBalls = serverState?.drawnBalls ?? snap.drawnBalls;
-      const effectiveJackpot = serverState?.jackpot ?? snap.jackpot;
-      const effectiveTotalTickets = serverState?.totalRoomTickets ?? snap.totalRoomTickets;
-      const effectiveTakenTickets = (serverState?.takenTickets ?? snap.takenTickets).filter(
+      const allKnownTaken = Array.from(new Set([...(serverState?.takenTickets || []), ...serverTakenTickets]));
+      const effectiveTakenTickets = allKnownTaken.filter(
         (t) => !activeUserTickets.includes(t)
       );
+      const totalTicketsInPlay = Array.from(new Set([...allKnownTaken, ...activeUserTickets])).length;
+      const effectiveTotalTickets = typeof serverState?.totalRoomTickets === "number"
+        ? serverState.totalRoomTickets
+        : totalTicketsInPlay;
+      const effectiveJackpot = typeof serverState?.jackpot === "number"
+        ? serverState.jackpot
+        : (effectiveTotalTickets * 10);
 
       // A. New Round Rollover (Epoch boundary reached)
       if (effectiveRoundId !== currentRoundId) {
@@ -534,8 +540,9 @@ export function App() {
     }
 
     // Check if taken by another phone or room opponent
-    if (takenTickets.includes(ticketNum)) {
-      alert("ይህ ካርቴላ በሌላ ተጫዋች ተይዟል! እባክዎ ሌላ ካርቴላ ይምረጡ።");
+    if (takenTickets.includes(ticketNum) || serverTakenTickets.includes(ticketNum)) {
+      buzz([20, 50, 20]);
+      alert(`ይህ ካርቴላ (#${ticketNum}) በሌላ ተጫዋች ተይዟል! እባክዎ ሌላ ካርቴላ ይምረጡ።`);
       return;
     }
 
@@ -571,7 +578,20 @@ export function App() {
     const nextPending = [...pendingTickets, ticketNum];
     setPendingTickets(nextPending);
     saveUserRoundTickets(currentRoundId, nextPending);
-    claimRemoteTicket(currentRoundId, ticketNum, player.name, player.phone);
+
+    // Authoritative Server Validation: If another phone took it in the same split-second, refund immediately!
+    claimRemoteTicket(currentRoundId, ticketNum, player.name, player.phone).then((success) => {
+      if (!success) {
+        buzz([20, 50, 20]);
+        alert(`❌ ካርቴላ #${ticketNum} አሁን በሌላ ተጫዋች ተይዟል! 10 ETB ገንዘብዎ ተመልሷል።`);
+        setPlayWallet((prev) => prev + STAKE_PER_TICKET);
+        setPendingTickets((prev) => {
+          const filtered = prev.filter((x) => x !== ticketNum);
+          saveUserRoundTickets(currentRoundId, filtered);
+          return filtered;
+        });
+      }
+    });
   };
 
   // Claim Floating Bonus
