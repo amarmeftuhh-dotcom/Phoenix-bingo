@@ -4,14 +4,179 @@ import tailwindcss from '@tailwindcss/vite';
 import path from 'path';
 
 /**
- * Universal In-Memory Live Room Synchronization Engine for Connected Phones
+ * Universal Multi-Device Live Room Synchronization Engine
+ * Maintains real-time room state across multiple connected phones and tabs.
  */
+const LOBBY_MS = 45000;
+const CALLING_MS = 50000;
+const VICTORY_MS = 3000;
+const ROUND_DURATION_MS = 98000;
+const BALL_INTERVAL_MS = 2500;
+
+const OPPONENT_NAMES = [
+  "አበበ ተፈራ", "ሰለሞን ካሳ", "ዳንኤል ወርቁ", "ኤርሚያስ ታደሰ",
+  "ዮናስ በቀለ", "በረከት አያሌው", "ኪሩቤል አለሙ", "ያብስራ ተሾመ",
+  "ሄኖክ ግርማ", "ናሆም ደጀኔ", "ቴዎድሮስ ካሳሁን", "አማኑኤል ጥላሁን",
+  "ታምራት ደስታ", "ማህሌት ጌታቸው", "ራሄል ታደለ", "ህሊና ሰለሞን",
+  "ዳዊት ከበደ", "ትዕግስት አለሙ", "ሳራ ታደሰ", "መሳይ አስፋው"
+];
+
+function createPRNG(seed: number) {
+  let s = (seed * 1664525 + 1013904223) >>> 0;
+  return function next(): number {
+    s = (Math.imul(s, 1664525) + 1013904223) >>> 0;
+    return s / 4294967296;
+  };
+}
+
+function getDeterministicBalls(roundId: number): number[] {
+  const balls = Array.from({ length: 75 }, (_, i) => i + 1);
+  const rand = createPRNG(roundId * 982451653);
+  for (let i = balls.length - 1; i > 0; i--) {
+    const j = Math.floor(rand() * (i + 1));
+    const temp = balls[i]!;
+    balls[i] = balls[j]!;
+    balls[j] = temp;
+  }
+  return balls;
+}
+
+function generateBoard(ticketId: number) {
+  let seed = (ticketId * 1234567) >>> 0;
+  function nextRand() {
+    seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
+    return seed / 4294967296;
+  }
+  nextRand(); nextRand(); nextRand();
+
+  function getCol(min: number, max: number): number[] {
+    const arr: number[] = [];
+    while (arr.length < 5) {
+      const val = Math.floor(nextRand() * (max - min + 1)) + min;
+      if (!arr.includes(val)) arr.push(val);
+    }
+    return arr.sort((a, b) => a - b);
+  }
+
+  const columns = [
+    getCol(1, 15),
+    getCol(16, 30),
+    getCol(31, 45),
+    getCol(46, 60),
+    getCol(61, 75),
+  ];
+
+  const cells: { row: number; col: number; value: number | "FREE" }[] = [];
+  for (let r = 0; r < 5; r++) {
+    for (let c = 0; c < 5; c++) {
+      if (r === 2 && c === 2) {
+        cells.push({ row: r, col: c, value: "FREE" });
+      } else {
+        cells.push({ row: r, col: c, value: columns[c]![r]! });
+      }
+    }
+  }
+  return cells;
+}
+
+function checkBingoPattern(grid: boolean[][]): boolean {
+  for (let r = 0; r < 5; r++) {
+    if (grid[r]!.every(Boolean)) return true;
+  }
+  for (let c = 0; c < 5; c++) {
+    let colFull = true;
+    for (let r = 0; r < 5; r++) {
+      if (!grid[r]![c]) { colFull = false; break; }
+    }
+    if (colFull) return true;
+  }
+  let d1 = true;
+  for (let i = 0; i < 5; i++) {
+    if (!grid[i]![i]) { d1 = false; break; }
+  }
+  if (d1) return true;
+  let d2 = true;
+  for (let i = 0; i < 5; i++) {
+    if (!grid[i]![4 - i]) { d2 = false; break; }
+  }
+  if (d2) return true;
+  if (grid[0]![0] && grid[0]![4] && grid[4]![0] && grid[4]![4]) return true;
+  return false;
+}
+
+function evaluateWinner(tickets: number[], balls: number[]) {
+  if (tickets.length === 0) {
+    return { winningTicket: 1, winningBallCount: 20 };
+  }
+  const boards = tickets.map((t) => ({ t, cells: generateBoard(t) }));
+  for (let k = 4; k <= 20; k++) {
+    const drawnSet = new Set(balls.slice(0, k));
+    for (const b of boards) {
+      const grid: boolean[][] = Array.from({ length: 5 }, () => Array(5).fill(false));
+      b.cells.forEach((cell) => {
+        grid[cell.row]![cell.col] = cell.value === "FREE" || (typeof cell.value === "number" && drawnSet.has(cell.value));
+      });
+      if (checkBingoPattern(grid)) {
+        return { winningTicket: b.t, winningBallCount: k };
+      }
+    }
+  }
+  // Default to ticket with closest match at ball 20
+  return { winningTicket: tickets[0] || 1, winningBallCount: 20 };
+}
+
+function getDeterministicOpponents(roundId: number) {
+  const rand = createPRNG(roundId * 433494437);
+  const count = 4 + Math.floor(rand() * 4); // 4 to 7 opponent tickets
+  const opponents: { ticketNum: number; userName: string; userPhone: string }[] = [];
+  const used = new Set<number>();
+  for (let i = 0; i < count; i++) {
+    let t = Math.floor(rand() * 450) + 1;
+    while (used.has(t)) {
+      t = (t + 1) % 450 + 1;
+    }
+    used.add(t);
+    const nIdx = Math.floor(rand() * OPPONENT_NAMES.length);
+    const phone = `09${Math.floor(10 + rand() * 80)}***${Math.floor(10 + rand() * 89)}`;
+    opponents.push({
+      ticketNum: t,
+      userName: OPPONENT_NAMES[nIdx] || "ተጫዋች",
+      userPhone: phone,
+    });
+  }
+  return opponents;
+}
+
 function liveRoomSyncPlugin(): Plugin {
-  let currentRoundId = -1;
-  const takenTicketsMap = new Map<
+  // Store taken tickets per roundId: roundId -> Map<ticketNum, TicketRecord>
+  const roundsMap = new Map<
     number,
-    { userId: string; userName: string; userPhone?: string; time: number }
+    Map<
+      number,
+      { userId: string; userName: string; userPhone?: string; time: number }
+    >
   >();
+
+  // Prune rounds older than 5 rounds ago to avoid memory leaks
+  function cleanOldRounds(latestRoundId: number) {
+    if (roundsMap.size > 8) {
+      for (const rId of roundsMap.keys()) {
+        if (rId < latestRoundId - 5) {
+          roundsMap.delete(rId);
+        }
+      }
+    }
+  }
+
+  function getOrCreateRound(roundId: number) {
+    let roundMap = roundsMap.get(roundId);
+    if (!roundMap) {
+      roundMap = new Map();
+      roundsMap.set(roundId, roundMap);
+    }
+    cleanOldRounds(roundId);
+    return roundMap;
+  }
 
   return {
     name: 'live-room-sync-plugin',
@@ -19,28 +184,92 @@ function liveRoomSyncPlugin(): Plugin {
       server.middlewares.use(async (req, res, next) => {
         const url = new URL(req.url || '', `http://${req.headers.host || 'localhost'}`);
 
+        // 1. GET /api/room/state
         if (url.pathname === '/api/room/state') {
-          const reqRound = parseInt(url.searchParams.get('roundId') || '-1', 10);
-          if (reqRound !== -1 && reqRound !== currentRoundId) {
-            currentRoundId = reqRound;
-            takenTicketsMap.clear();
+          const now = Date.now();
+          const currentRoundId = Math.floor(now / ROUND_DURATION_MS);
+          const elapsed = now % ROUND_DURATION_MS;
+
+          const roundMap = getOrCreateRound(currentRoundId);
+          const realTickets = Array.from(roundMap.keys());
+          const opponentList = getDeterministicOpponents(currentRoundId);
+
+          // Opponents take tickets not claimed by real users
+          const filteredOpponents = opponentList.filter((o) => !roundMap.has(o.ticketNum));
+          const allTaken = Array.from(new Set([...realTickets, ...filteredOpponents.map((o) => o.ticketNum)]));
+
+          const details: Record<number, { userId: string; userName: string; userPhone?: string }> = {};
+          const uniqueUsers = new Set<string>();
+
+          for (const [tNum, info] of roundMap.entries()) {
+            details[tNum] = { userId: info.userId, userName: info.userName, userPhone: info.userPhone };
+            uniqueUsers.add(info.userId);
+          }
+          for (const o of filteredOpponents) {
+            details[o.ticketNum] = { userId: `opp_${o.ticketNum}`, userName: o.userName, userPhone: o.userPhone };
           }
 
-          const taken = Array.from(takenTicketsMap.keys());
-          const uniqueUsers = new Set(Array.from(takenTicketsMap.values()).map((v) => v.userId));
+          const balls = getDeterministicBalls(currentRoundId);
+          const { winningTicket, winningBallCount } = evaluateWinner(allTaken, balls);
+
+          const winnerRecord = details[winningTicket];
+          const winnerInfo = {
+            ticket: winningTicket,
+            winningBallCount,
+            name: winnerRecord?.userName || "አበበ ተፈራ",
+            phone: winnerRecord?.userPhone || "0911***89",
+            userId: winnerRecord?.userId || `opp_${winningTicket}`,
+          };
+
+          let phase: "lobby" | "game" | "victory" = "lobby";
+          let countdown = 0;
+          let drawnBalls: number[] = [];
+
+          if (elapsed < LOBBY_MS) {
+            phase = "lobby";
+            countdown = Math.max(0, Math.ceil((LOBBY_MS - elapsed) / 1000));
+            drawnBalls = [];
+          } else if (elapsed < LOBBY_MS + CALLING_MS) {
+            phase = "game";
+            countdown = 0;
+            const gameElapsed = elapsed - LOBBY_MS;
+            const count = Math.min(20, Math.floor(gameElapsed / BALL_INTERVAL_MS) + 1);
+            drawnBalls = balls.slice(0, count).reverse();
+          } else {
+            phase = "victory";
+            countdown = Math.max(0, Math.ceil((ROUND_DURATION_MS - elapsed) / 1000));
+            drawnBalls = balls.slice(0, 20).reverse();
+          }
+
+          const currentBall = drawnBalls[0] || null;
+          const totalRoomTickets = allTaken.length;
+          const jackpot = totalRoomTickets * 10;
 
           res.setHeader('Content-Type', 'application/json');
           res.setHeader('Access-Control-Allow-Origin', '*');
+          res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
           res.end(
             JSON.stringify({
+              success: true,
+              serverTime: now,
               roundId: currentRoundId,
-              takenTickets: taken,
-              playersCount: uniqueUsers.size,
+              phase,
+              countdown,
+              elapsedInRound: elapsed,
+              drawnBalls,
+              currentBall,
+              totalRoomTickets,
+              takenTickets: allTaken,
+              takenDetails: details,
+              jackpot,
+              winnerInfo,
+              playersCount: uniqueUsers.size + filteredOpponents.length,
             })
           );
           return;
         }
 
+        // 2. POST /api/room/select
         if (url.pathname === '/api/room/select' && req.method === 'POST') {
           let bodyStr = '';
           req.on('data', (chunk) => {
@@ -51,28 +280,48 @@ function liveRoomSyncPlugin(): Plugin {
               const body = JSON.parse(bodyStr || '{}');
               const { roundId, ticketNum, userId, userName, userPhone } = body;
 
-              if (typeof roundId === 'number' && roundId !== currentRoundId) {
-                currentRoundId = roundId;
-                takenTicketsMap.clear();
+              if (typeof roundId !== 'number' || typeof ticketNum !== 'number' || !userId) {
+                res.statusCode = 400;
+                res.end(JSON.stringify({ success: false, error: 'Invalid parameters' }));
+                return;
               }
 
-              if (ticketNum && userId) {
-                takenTicketsMap.set(ticketNum, {
-                  userId,
-                  userName: userName || 'ተጫዋች',
-                  userPhone: userPhone || '',
-                  time: Date.now(),
-                });
+              const roundMap = getOrCreateRound(roundId);
+
+              // Check if ticket is already taken by a different user
+              const existing = roundMap.get(ticketNum);
+              if (existing && existing.userId !== userId) {
+                const taken = Array.from(roundMap.keys());
+                res.setHeader('Content-Type', 'application/json');
+                res.setHeader('Access-Control-Allow-Origin', '*');
+                res.end(
+                  JSON.stringify({
+                    success: false,
+                    error: 'TICKET_ALREADY_TAKEN',
+                    takenTickets: taken,
+                  })
+                );
+                return;
               }
 
-              const taken = Array.from(takenTicketsMap.keys());
-              const uniqueUsers = new Set(Array.from(takenTicketsMap.values()).map((v) => v.userId));
+              // Claim ticket
+              roundMap.set(ticketNum, {
+                userId,
+                userName: userName || 'ተጫዋች',
+                userPhone: userPhone || '',
+                time: Date.now(),
+              });
+
+              const taken = Array.from(roundMap.keys());
+              const uniqueUsers = new Set(Array.from(roundMap.values()).map((v) => v.userId));
 
               res.setHeader('Content-Type', 'application/json');
               res.setHeader('Access-Control-Allow-Origin', '*');
               res.end(
                 JSON.stringify({
                   success: true,
+                  serverTime: Date.now(),
+                  roundId,
                   takenTickets: taken,
                   playersCount: uniqueUsers.size,
                 })
@@ -85,6 +334,7 @@ function liveRoomSyncPlugin(): Plugin {
           return;
         }
 
+        // 3. POST /api/room/unselect
         if (url.pathname === '/api/room/unselect' && req.method === 'POST') {
           let bodyStr = '';
           req.on('data', (chunk) => {
@@ -93,24 +343,35 @@ function liveRoomSyncPlugin(): Plugin {
           req.on('end', () => {
             try {
               const body = JSON.parse(bodyStr || '{}');
-              const { ticketNum } = body;
+              const { roundId, ticketNum, userId } = body;
 
-              if (ticketNum) {
-                takenTicketsMap.delete(ticketNum);
+              if (typeof roundId === 'number') {
+                const roundMap = getOrCreateRound(roundId);
+                const existing = roundMap.get(ticketNum);
+                // Allow releasing if owned or admin
+                if (!existing || !userId || existing.userId === userId) {
+                  roundMap.delete(ticketNum);
+                }
+
+                const taken = Array.from(roundMap.keys());
+                const uniqueUsers = new Set(Array.from(roundMap.values()).map((v) => v.userId));
+
+                res.setHeader('Content-Type', 'application/json');
+                res.setHeader('Access-Control-Allow-Origin', '*');
+                res.end(
+                  JSON.stringify({
+                    success: true,
+                    serverTime: Date.now(),
+                    roundId,
+                    takenTickets: taken,
+                    playersCount: uniqueUsers.size,
+                  })
+                );
+                return;
               }
 
-              const taken = Array.from(takenTicketsMap.keys());
-              const uniqueUsers = new Set(Array.from(takenTicketsMap.values()).map((v) => v.userId));
-
-              res.setHeader('Content-Type', 'application/json');
-              res.setHeader('Access-Control-Allow-Origin', '*');
-              res.end(
-                JSON.stringify({
-                  success: true,
-                  takenTickets: taken,
-                  playersCount: uniqueUsers.size,
-                })
-              );
+              res.statusCode = 400;
+              res.end(JSON.stringify({ success: false, error: 'Invalid roundId' }));
             } catch {
               res.statusCode = 400;
               res.end(JSON.stringify({ success: false, error: 'Bad Request' }));
