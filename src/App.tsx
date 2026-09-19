@@ -30,6 +30,7 @@ import {
   getStoredWalletBalances,
   saveStoredWalletBalances,
   claimWelcomePlayBonus,
+  addPlayerActivityLog,
 } from "@/lib/platformStore";
 import {
   getLiveRoundSnapshot,
@@ -336,7 +337,7 @@ export function App() {
         setTakenTickets(effectiveTakenTickets);
         setLiveJackpot(effectiveJackpot);
         setTotalRoomTickets(effectiveTotalTickets);
-        setWaitingForPlayers(false);
+        setWaitingForPlayers(effectiveTotalTickets === 0 && effectivePhase === "lobby");
         lastDrawnCountRef.current = 0;
         clearOldRoundTickets(effectiveRoundId);
         return;
@@ -347,7 +348,7 @@ export function App() {
       setTakenTickets(effectiveTakenTickets);
       setLiveJackpot(effectiveJackpot);
       setTotalRoomTickets(effectiveTotalTickets);
-      setWaitingForPlayers(false);
+      setWaitingForPlayers(effectiveTotalTickets === 0 && effectivePhase === "lobby");
 
       // C. Sync Phases
       if (effectivePhase === "lobby") {
@@ -431,6 +432,12 @@ export function App() {
           player.totalWon = (player.totalWon || 0) + liveJackpot;
           player.gamesPlayed = (player.gamesPlayed || 0) + 1;
           saveStoredPlayer(player);
+          addPlayerActivityLog({
+            type: "game_win",
+            title: `🏆 ቢንጎ አሸነፉ! (+${liveJackpot} ETB)`,
+            description: `ካርቴላ #${num} በዙር #${currentRoundId} አሸናፊ ሆኗል!`,
+            amount: liveJackpot,
+          });
           setWinners([
             {
               name: `${player.name} (እርስዎ)`,
@@ -465,7 +472,7 @@ export function App() {
         : "09***38"
       : (serverState?.winnerInfo?.phone ?? snap.winnerInfo.phone);
 
-    if (isVictoryPhase && !won) {
+    if (isVictoryPhase && !won && totalRoomTickets > 0 && winnerTicket > 0) {
       buzz([15, 40, 20]);
       if (isUserWin) {
         const payoutKey = `phoenix_payout_claimed_round_${currentRoundId}`;
@@ -490,7 +497,7 @@ export function App() {
       playBingoFanfare();
       setWon(true);
     }
-  }, [drawn, ticketsData, activeTickets, won, isGameStarted, liveJackpot, currentRoundId, serverTakenTickets]);
+  }, [drawn, ticketsData, activeTickets, won, isGameStarted, liveJackpot, currentRoundId, serverTakenTickets, totalRoomTickets]);
 
   const toggleCell = (ticketNum: number, cellId: string) => {
     setTicketsData((prev) => {
@@ -578,6 +585,12 @@ export function App() {
     const nextPending = [...pendingTickets, ticketNum];
     setPendingTickets(nextPending);
     saveUserRoundTickets(currentRoundId, nextPending);
+    addPlayerActivityLog({
+      type: "ticket_bought",
+      title: `🎟️ ካርቴላ ተገዝቷል (#${ticketNum})`,
+      description: `በዙር #${currentRoundId} በ 10 ETB ካርቴላ #${ticketNum} ተመርጧል`,
+      amount: -STAKE_PER_TICKET,
+    });
 
     // Authoritative Server Validation: If another phone took it in the same split-second, refund immediately!
     claimRemoteTicket(currentRoundId, ticketNum, player.name, player.phone).then((success) => {
@@ -599,6 +612,12 @@ export function App() {
     buzz([20, 50]);
     setPlayWallet((prev) => prev + 25);
     setShowPromoFloat(false);
+    addPlayerActivityLog({
+      type: "bonus",
+      title: "🎁 የ 25 ETB የፍሎት ቦነስ ተቀብለዋል",
+      description: "በአድሚኑ የተለቀቀውን የፍጥነት ቦነስ አግኝተዋል",
+      amount: 25,
+    });
     setPromoToast("🎉 እንኳን ደስ አሎት! የ 25.00 ETB ነፃ ቦነስ ተቀብለዋል!");
     setTimeout(() => setPromoToast(null), 3500);
   };
@@ -610,6 +629,12 @@ export function App() {
     buzz(15);
     if (["SPARKVIP", "PHOENIX10", "BONUS20", "WELCOME", "VIP", "BINGO"].includes(code)) {
       setPlayWallet((prev) => prev + 50);
+      addPlayerActivityLog({
+        type: "bonus",
+        title: `🎁 ፕሮሞ ኮድ ተጠቅመዋል (+50 ETB)`,
+        description: `የተጠቀሙት ኮድ: ${code}`,
+        amount: 50,
+      });
       setPromoToast(`🎉 እንኳን ደስ አሎት! ኮድ "${code}" ጸድቋል (+50 ETB)!`);
       setShowPromoModal(false);
       setPromoCodeInput("");
