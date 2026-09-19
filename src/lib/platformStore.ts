@@ -8,6 +8,15 @@
  * 4. Direct Telegram Bot Dispatch for Deposit alerts, Approvals, & Broadcasts
  */
 
+export interface WeeklyActivityLog {
+  id: string;
+  type: "ticket_bought" | "game_win" | "deposit" | "withdrawal" | "weekly_bonus";
+  title: string;
+  description: string;
+  amount?: number;
+  timestamp: string;
+}
+
 export interface PlayerProfile {
   id: string;
   telegramId?: number;
@@ -15,6 +24,10 @@ export interface PlayerProfile {
   username?: string;
   phone: string;
   photoUrl?: string;
+  avatarIcon?: string; // e.g. 🦁, 🦅, 🔥, 👑, ⚡, 💎, 🎯, 🚀
+  weeklyBadge?: string; // Weekly custom badge / title (e.g. "የሳምንቱ አነጣጣሪ", "Gold Hunter")
+  luckyNumber?: number; // Player's chosen lucky number (1 - 75)
+  weeklyFileNote?: string; // Weekly personal goal or memo
   isVerified: boolean;
   isAutoLoggedIn: boolean;
   mainWallet: number;
@@ -22,6 +35,7 @@ export interface PlayerProfile {
   gamesPlayed: number;
   totalWon: number;
   joinedAt: string;
+  weeklyLogs?: WeeklyActivityLog[];
 }
 
 export interface PlatformTx {
@@ -270,6 +284,24 @@ export function saveStoredPlayer(player: PlayerProfile) {
     // Also sync with registered users list for Admin View
     syncPlayerToUsersDirectory(player);
     window.dispatchEvent(new CustomEvent("phoenix_player_updated", { detail: player }));
+  } catch {}
+}
+
+export function addPlayerActivityLog(log: Omit<WeeklyActivityLog, "id" | "timestamp">) {
+  try {
+    const player = getStoredPlayer();
+    const newLog: WeeklyActivityLog = {
+      ...log,
+      id: `act_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+      timestamp: new Date().toLocaleDateString("am-ET", {
+        weekday: "short",
+        hour: "2-digit",
+        minute: "2-digit",
+      }),
+    };
+    const logs = [newLog, ...(player.weeklyLogs || [])].slice(0, 30);
+    player.weeklyLogs = logs;
+    saveStoredPlayer(player);
   } catch {}
 }
 
