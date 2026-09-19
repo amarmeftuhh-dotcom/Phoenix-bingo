@@ -145,8 +145,8 @@ export function findFirstBingoWinner(
   participatingTickets: number[],
   ballsSequence: number[]
 ): { winningTicket: number; winningBallCount: number } {
-  if (participatingTickets.length === 0) {
-    return { winningTicket: 0, winningBallCount: 20 };
+  if (!participatingTickets || participatingTickets.length === 0) {
+    return { winningTicket: 0, winningBallCount: 0 };
   }
 
   const boards = participatingTickets.map((tNum) => ({
@@ -168,7 +168,25 @@ export function findFirstBingoWinner(
     }
   }
 
-  return { winningTicket: participatingTickets[0] || 1, winningBallCount: 20 };
+  // If no card hits full 5-line Bingo by ball 20, the ticket with highest matches among participants wins!
+  const drawnSet20 = new Set(ballsSequence.slice(0, 20));
+  let bestTicket = participatingTickets[0]!;
+  let maxMatched = -1;
+
+  for (const b of boards) {
+    let matched = 0;
+    b.cells.forEach((cell) => {
+      if (cell.value === "FREE" || (typeof cell.value === "number" && drawnSet20.has(cell.value))) {
+        matched++;
+      }
+    });
+    if (matched > maxMatched) {
+      maxMatched = matched;
+      bestTicket = b.tNum;
+    }
+  }
+
+  return { winningTicket: bestTicket, winningBallCount: 20 };
 }
 
 /**
@@ -292,6 +310,31 @@ export function getLiveRoundSnapshot(
   const allParticipatingTickets = Array.from(new Set([...userTickets, ...opponentTickets]));
   const totalRoomTickets = allParticipatingTickets.length;
   const jackpot = totalRoomTickets * 10;
+
+  // If NO tickets are taken by any player in this room: NEVER start game! Stay in lobby waiting!
+  if (totalRoomTickets === 0) {
+    return {
+      roundId,
+      phase: "lobby",
+      countdown: Math.round(LOBBY_MS / 1000),
+      elapsedInRound: 0,
+      isGameStarted: false,
+      canStart: false,
+      waitingForPlayers: true,
+      drawnBalls: [],
+      currentBall: null,
+      winningBallCount: 0,
+      winnerInfo: {
+        name: "",
+        phone: "",
+        ticket: 0,
+        isUser: false,
+      },
+      totalRoomTickets: 0,
+      takenTickets: [],
+      jackpot: 0,
+    };
+  }
 
   const fullBallsSequence = getDeterministicBallsForRound(roundId);
 
