@@ -169,32 +169,20 @@ export function LobbyView({
 
           <div className="flex flex-col items-end rounded-2xl border border-border/80 bg-black/70 px-3 py-1.5 text-right backdrop-blur-sm shadow-inner">
             <span className="text-[9px] font-black text-muted-foreground uppercase tracking-wider">
-              {isGameStarted
-                ? "በሂደት ላይ"
-                : totalRoomTickets === 0
-                ? "ተጫዋቾችን በመጠበቅ ላይ"
-                : waitingForPlayers
-                ? "ተጋጣሚ በመጠበቅ ላይ"
-                : "የሚጀምርበት ጊዜ"}
+              {isGameStarted ? "በሂደት ላይ" : "የሚጀምርበት ጊዜ"}
             </span>
             <span className="text-sm font-black text-primary tabular-nums flex items-center gap-1.5 mt-0.5">
-              <Timer className="h-3.5 w-3.5 text-primary shrink-0 animate-pulse" />
-              {isGameStarted
-                ? "ተጀምሯል!"
-                : totalRoomTickets === 0
-                ? "ካርቴላ ይምረጡ"
-                : waitingForPlayers
-                ? "ቢያንስ 2 ተጫዋች"
-                : `${mm}:${ss}`}
+              <Timer className="h-3.5 w-3.5 text-gold shrink-0 animate-pulse" />
+              {isGameStarted ? "ተጀምሯል!" : `${mm}:${ss}`}
             </span>
           </div>
         </div>
       </div>
 
       {totalRoomTickets === 0 && (
-        <div className="mx-3 mt-2.5 flex items-center justify-center gap-2 rounded-2xl border border-gold/40 bg-gold/10 px-3 py-2.5 text-xs font-black text-gold shadow-sm">
+        <div className="mx-3 mt-2.5 flex items-center justify-center gap-2 rounded-2xl border border-gold/40 bg-gold/10 px-3 py-2 text-xs font-black text-gold shadow-sm">
           <Coins className="h-4 w-4 shrink-0 text-gold animate-bounce" />
-          <span>ጨዋታው እንዲጀምር ከታች ካሉት ካርቴላዎች ውስጥ ይምረጡ (+10 ETB የቀጥታ ጃክፖት)!</span>
+          <span>ጨዋታው በ {mm}:{ss} ውስጥ ይጀምራል — ካርቴላ ይምረጡ (+10 ETB የቀጥታ ጃክፖት)!</span>
         </div>
       )}
 
