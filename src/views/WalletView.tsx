@@ -1,4 +1,4 @@
-import { useState, Dispatch, SetStateAction } from "react";
+import { useState, useEffect, Dispatch, SetStateAction } from "react";
 import {
   ArrowDownToLine,
   ArrowUpFromLine,
@@ -14,11 +14,20 @@ import {
   Copy,
   ClipboardPaste,
   AlertTriangle,
+  Clock,
 } from "lucide-react";
 import { LangToggle } from "@/components/phoenix/LangToggle";
 import { useLang } from "@/lib/i18n";
 import { buzz } from "@/lib/bingo";
 import { cn } from "@/lib/utils";
+import {
+  getStoredPlayer,
+  getStoredTransactions,
+  submitPlayerDeposit,
+  submitPlayerWithdrawal,
+  addPlayerActivityLog,
+  type PlatformTx,
+} from "@/lib/platformStore";
 
 interface WalletViewProps {
   mainWallet?: number;
@@ -59,6 +68,7 @@ const METHODS = [
     badge: "Fast 🚀",
   },
 ];
+
 const INITIAL_TX = [
   {
     id: "TX-9982",
@@ -108,9 +118,9 @@ const INITIAL_TX = [
 ];
 
 export function WalletView({
-  mainWallet = 70.0,
+  mainWallet = 0.0,
   setMainWallet,
-  playWallet = 25.0,
+  playWallet = 0.0,
   setPlayWallet,
 }: WalletViewProps) {
   const { t } = useLang();
@@ -118,11 +128,23 @@ export function WalletView({
   const [method, setMethod] = useState("telebirr");
   const [amount, setAmount] = useState("");
   const [smsText, setSmsText] = useState("");
+  const [destinationAccount, setDestinationAccount] = useState("");
   const [copiedAcc, setCopiedAcc] = useState(false);
   const [done, setDone] = useState(false);
   const [txFilter, setTxFilter] = useState<"all" | "deposit" | "withdraw" | "win">("all");
-  const [txList, setTxList] = useState(INITIAL_TX);
+  const [txList, setTxList] = useState<PlatformTx[]>(() => getStoredTransactions());
   const [localMain, setLocalMain] = useState(mainWallet);
+  const [submitting, setSubmitting] = useState(false);
+  const [feedbackMsg, setFeedbackMsg] = useState<string | null>(null);
+
+  // Sync transactions live
+  useEffect(() => {
+    const handleTxUpdate = () => {
+      setTxList(getStoredTransactions());
+    };
+    window.addEventListener("phoenix_transactions_updated", handleTxUpdate);
+    return () => window.removeEventListener("phoenix_transactions_updated", handleTxUpdate);
+  }, []);
 
   const currentBalance = setMainWallet ? mainWallet : localMain;
   const currentBankObj = METHODS.find((m) => m.id === method) || METHODS[0]!;
@@ -165,71 +187,85 @@ export function WalletView({
     }
   };
 
-  const submit = () => {
+  const submit = async () => {
     buzz([10, 30, 10]);
     const num = parseFloat(amount) || 0;
-    if (num <= 0) return;
+    if (num <= 0 || submitting) return;
+
+    setSubmitting(true);
 
     if (mode === "deposit") {
-      const bonus = num >= 100 ? num * 0.2 : 0;
+      // Extract TxRef if available
+      const refMatch = smsText.match(/(TxRef|Ref|FT|CBE|MP)[\s:]*([A-Za-z0-9]+)/i);
+      const txRef = refMatch ? `${refMatch[1]}-${refMatch[2]}` : undefined;
 
-      if (setMainWallet) {
-        setMainWallet((b) => b + num);
-      } else {
-        setLocalMain((b) => b + num);
-      }
+      await submitPlayerDeposit({
+        amount: num,
+        bank: currentBankObj.label,
+        smsText,
+        txRef,
+      });
 
-      if (bonus > 0 && setPlayWallet) {
-        setPlayWallet((p) => p + bonus);
-      }
+      addPlayerActivityLog({
+        type: "deposit",
+        title: `💳 የገቢ ጥያቄ ተልኳል (${num} ETB)`,
+        description: `በ${currentBankObj.label} በኩል ${num} ETB የገቢ ማስረጃ ተልኳል`,
+        amount: num,
+      });
 
-      setTxList((prev) => [
-        {
-          id: `TX-${Math.floor(1000 + Math.random() * 9000)}`,
-          kind: "deposit",
-          label: `${currentBankObj.label} Deposit (ገቢ)`,
-          method: currentBankObj.label,
-          amount: num,
-          when: "Just now",
-          status: "Approved",
-        },
-        ...prev,
-      ]);
+      setDone(true);
+      setFeedbackMsg("✅ የገቢ ጥያቄዎ በተሳካ ሁኔታ ተልኳል! አድሚኑ አረጋግጦ በ 2 ደቂቃ ውስጥ ወደ ዋሌትዎ ያስገባዋል።");
+      setAmount("");
+      setSmsText("");
     } else {
       if (num > currentBalance) {
         alert("በዋና ሂሳብዎ ላይ በቂ ቀሪ ሂሳብ የለም!");
+        setSubmitting(false);
         return;
       }
-      if (setMainWallet) {
-        setMainWallet((b) => Math.max(0, b - num));
-      } else {
-        setLocalMain((b) => Math.max(0, b - num));
+      if (!destinationAccount.trim()) {
+        alert("እባክዎ ገንዘቡ የሚገባበትን የቴሌብር ወይም የባንክ ሂሳብ ቁጥር ያስገቡ!");
+        setSubmitting(false);
+        return;
       }
-      setTxList((prev) => [
-        {
-          id: `TX-${Math.floor(1000 + Math.random() * 9000)}`,
-          kind: "withdraw",
-          label: `${currentBankObj.label} Payout (ወጪ)`,
-          method: currentBankObj.label,
+
+      const res = await submitPlayerWithdrawal({
+        amount: num,
+        bank: currentBankObj.label,
+        destinationAccount: destinationAccount.trim(),
+      });
+
+      if (res.success) {
+        if (setMainWallet) {
+          setMainWallet((b) => Math.max(0, b - num));
+        } else {
+          setLocalMain((b) => Math.max(0, b - num));
+        }
+        addPlayerActivityLog({
+          type: "withdraw",
+          title: `📤 የወጪ ጥያቄ ተልኳል (${num} ETB)`,
+          description: `ወደ ${destinationAccount} (${currentBankObj.label})`,
           amount: -num,
-          when: "Just now",
-          status: "Approved",
-        },
-        ...prev,
-      ]);
+        });
+        setDone(true);
+        setFeedbackMsg("📤 የወጪ ጥያቄዎ ደርሷል! አድሚኑ በ 5-15 ደቂቃ ውስጥ ያስተላልፍልዎታል።");
+        setAmount("");
+      } else {
+        alert(res.message || "የወጪ ጥያቄው አልተሳካም");
+      }
     }
 
-    setDone(true);
-    setAmount("");
-    setSmsText("");
-    setTimeout(() => setDone(false), 2500);
+    setSubmitting(false);
+    setTimeout(() => {
+      setDone(false);
+      setFeedbackMsg(null);
+    }, 4500);
   };
 
   const filteredTx = txList.filter((tx) => {
     if (txFilter === "all") return true;
-    if (txFilter === "deposit") return tx.kind === "deposit";
-    if (txFilter === "withdraw") return tx.kind === "withdraw";
-    if (txFilter === "win") return tx.kind === "win" || tx.kind === "stake";
+    if (txFilter === "deposit") return tx.type === "deposit";
+    if (txFilter === "withdraw") return tx.type === "withdraw";
     return true;
   });
 
@@ -296,6 +332,31 @@ export function WalletView({
             </div>
           </div>
         </div>
+
+        {/* Free Refill / Bonus Banner when balance is low */}
+        {playWallet + currentBalance < 10 && (
+          <div className="mt-3 flex items-center justify-between gap-3 rounded-2xl border border-gold/50 bg-gradient-to-r from-amber-500/20 via-gold/15 to-yellow-500/20 p-3 shadow-md backdrop-blur-md">
+            <div className="flex items-center gap-2.5">
+              <span className="text-xl">🎁</span>
+              <div>
+                <p className="text-xs font-black text-gold leading-tight">ነፃ የመጫወቻ ቦነስ (Free Bonus)</p>
+                <p className="text-[10px] text-muted-foreground">ቀሪ ሂሳብዎ ዝቅተኛ ነው፤ 15 ETB ቦነስ ይውሰዱ</p>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                buzz([15, 30]);
+                if (setPlayWallet) {
+                  setPlayWallet((prev) => prev + 15);
+                }
+              }}
+              className="rounded-xl bg-gradient-to-r from-amber-400 to-gold px-3.5 py-1.5 text-xs font-black text-black shadow-md transition-transform active:scale-95 cursor-pointer shrink-0"
+            >
+              +15 ETB ውሰድ
+            </button>
+          </div>
+        )}
       </div>
 
       {/* Mode Switcher: Deposit / Withdraw */}
@@ -500,12 +561,35 @@ export function WalletView({
             </div>
           )}
 
+          {/* Destination Account for Withdrawal */}
+          {mode === "withdraw" && (
+            <div className="mt-3">
+              <label className="block text-[10px] font-black uppercase tracking-widest text-muted-foreground mb-1">
+                3. ገንዘቡ የሚላክበት ስልክ ወይም የባንክ ሂሳብ (Your Payout Account)
+              </label>
+              <input
+                type="text"
+                value={destinationAccount}
+                onChange={(e) => setDestinationAccount(e.target.value)}
+                placeholder="ለምሳሌ: 0956998368 ወይም 1000..."
+                className="w-full rounded-2xl border border-border/80 bg-black/60 px-3 py-2.5 text-xs font-medium text-foreground outline-none placeholder:text-muted-foreground/40 focus:border-gold focus:ring-1 focus:ring-gold"
+              />
+            </div>
+          )}
+
+          {feedbackMsg && (
+            <div className="mt-3 rounded-xl border border-emerald-500/40 bg-emerald-950/40 p-3 text-center text-xs font-bold text-emerald-300">
+              {feedbackMsg}
+            </div>
+          )}
+
           <button
             type="button"
             disabled={
+              submitting ||
               !amount ||
               parseFloat(amount) <= 0 ||
-              (mode === "withdraw" && parseFloat(amount) > currentBalance)
+              (mode === "withdraw" && (parseFloat(amount) > currentBalance || !destinationAccount.trim()))
             }
             onClick={submit}
             className={cn(
@@ -518,9 +602,11 @@ export function WalletView({
             {done ? <Check className="h-5 w-5 stroke-[3]" /> : null}
             {done
               ? "Completed (ተጠናቋል)!"
+              : submitting
+              ? "በመላክ ላይ..."
               : mode === "deposit"
-              ? `ገቢ አድርግ (SUBMIT ${amount || "0"} ETB)`
-              : `ወጪ አድርግ (WITHDRAW ${amount || "0"} ETB)`}
+              ? `ገቢ አረጋግጥ (DEPOSIT ${amount || "0"} ETB)`
+              : `ወጪ እዘዝ (WITHDRAW ${amount || "0"} ETB)`}
           </button>
         </div>
       </div>
@@ -546,7 +632,6 @@ export function WalletView({
               { id: "all", label: "All TXs" },
               { id: "deposit", label: "Deposits" },
               { id: "withdraw", label: "Withdrawals" },
-              { id: "win", label: "Wins & Stakes" },
             ] as const
           ).map((f) => (
             <button
@@ -576,7 +661,10 @@ export function WalletView({
             </div>
           ) : (
             filteredTx.map((tx) => {
-              const isPositive = tx.amount > 0;
+              const isDeposit = tx.type === "deposit";
+              const isPending = tx.status === "Pending";
+              const isRejected = tx.status === "Rejected";
+
               return (
                 <div
                   key={tx.id}
@@ -586,19 +674,19 @@ export function WalletView({
                     <div
                       className={cn(
                         "grid h-9 w-9 shrink-0 place-items-center rounded-xl border text-xs font-black",
-                        isPositive
+                        isDeposit
                           ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-400"
                           : "border-amber-500/40 bg-amber-500/10 text-amber-400"
                       )}
                     >
-                      {isPositive ? "↓" : "↑"}
+                      {isDeposit ? "↓" : "↑"}
                     </div>
                     <div className="min-w-0">
                       <p className="truncate text-xs font-black text-foreground">
-                        {tx.label}
+                        {tx.bank} {isDeposit ? "ገቢ (Deposit)" : "ወጪ (Payout)"}
                       </p>
                       <p className="truncate text-[10px] font-bold text-muted-foreground">
-                        {tx.id} • {tx.when}
+                        {tx.id} • {tx.date}
                       </p>
                     </div>
                   </div>
@@ -607,14 +695,24 @@ export function WalletView({
                     <span
                       className={cn(
                         "text-sm font-black tabular-nums",
-                        isPositive ? "text-emerald-400" : "text-amber-400"
+                        isDeposit ? "text-emerald-400" : "text-amber-400"
                       )}
                     >
-                      {isPositive ? "+" : ""}
-                      {tx.amount.toFixed(2)} ETB
+                      {isDeposit ? "+" : ""}
+                      {Math.abs(tx.amount).toFixed(2)} ETB
                     </span>
-                    <p className="text-[9px] font-bold text-emerald-400/90">
-                      ● {tx.status}
+                    <p
+                      className={cn(
+                        "text-[9px] font-bold flex items-center justify-end gap-1 mt-0.5",
+                        isPending
+                          ? "text-amber-400"
+                          : isRejected
+                          ? "text-rose-400"
+                          : "text-emerald-400"
+                      )}
+                    >
+                      {isPending && <Clock className="h-2.5 w-2.5" />}
+                      ● {isPending ? "Pending (በመጠባበቅ ላይ)" : isRejected ? "Rejected (ተሰርዟል)" : "Approved (ጸድቋል)"}
                     </p>
                   </div>
                 </div>
