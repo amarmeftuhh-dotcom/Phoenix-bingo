@@ -20,6 +20,13 @@ import {
   AlertTriangle,
   Shield,
   Landmark,
+  UserCheck,
+  Calendar,
+  History,
+  Target,
+  FileText,
+  Edit3,
+  Flame,
 } from "lucide-react";
 import { LangToggle } from "@/components/phoenix/LangToggle";
 import { WinningPatterns } from "@/components/phoenix/WinningPatterns";
@@ -27,6 +34,7 @@ import { useLang } from "@/lib/i18n";
 import { buzz } from "@/lib/bingo";
 import { cn } from "@/lib/utils";
 import { isSoundMuted, setSoundMuted, playBallChime } from "@/lib/sound";
+import { getStoredPlayer, saveStoredPlayer, addPlayerActivityLog, WeeklyActivityLog } from "@/lib/platformStore";
 
 const REF_LINK = "https://t.me/Phoenix_Bingo_Bot?start=ref_AMAR932";
 
@@ -40,6 +48,7 @@ export function ProfileView({
   onNavigateFinance?: () => void;
 }) {
   const { t } = useLang();
+  const [player, setPlayer] = useState(getStoredPlayer());
   const [copied, setCopied] = useState(false);
   const [promo, setPromo] = useState("");
   const [promoSuccess, setPromoSuccess] = useState(false);
@@ -51,21 +60,53 @@ export function ProfileView({
   const [soundEnabled, setSoundEnabled] = useState(!isSoundMuted());
   const [vibrationEnabled, setVibrationEnabled] = useState(true);
 
-  // Hidden stealth multi-tap counter on avatar for Owner only
-  const [tapCount, setTapCount] = useState(0);
-  const [showSecretModal, setShowSecretModal] = useState(false);
+  // Weekly Profile Customization State
+  const [isEditingProfile, setIsEditingProfile] = useState(false);
+  const [selectedAvatar, setSelectedAvatar] = useState(player.avatarIcon || "🦅");
+  const [selectedBadge, setSelectedBadge] = useState(player.weeklyBadge || "የሳምንቱ አሸናፊ 🏆");
+  const [luckyNumber, setLuckyNumber] = useState<number>(player.luckyNumber || 7);
+  const [weeklyNote, setWeeklyNote] = useState(player.weeklyFileNote || "የዚህ ሳምንት ግብ፡ 1000 ETB ጃክፖት ማሸነፍ!");
+  const [saveToast, setSaveToast] = useState(false);
 
-  const handleAvatarTap = () => {
-    const next = tapCount + 1;
-    setTapCount(next);
-    if (next >= 5) {
-      buzz([20, 50, 20]);
-      setTapCount(0);
-      setShowSecretModal(true);
-    } else {
-      buzz(8);
-      setTimeout(() => setTapCount(0), 2200);
-    }
+  const AVATAR_OPTIONS = [
+    { icon: "🦅", label: "Phoenix ፌኒክስ" },
+    { icon: "🦁", label: "Lion አንበሳ" },
+    { icon: "🔥", label: "Fire እሳት" },
+    { icon: "👑", label: "Crown ንጉሥ" },
+    { icon: "⚡", label: "Lightning መብረቅ" },
+    { icon: "💎", label: "Diamond አልማዝ" },
+    { icon: "🎯", label: "Sniper አነጣጣሪ" },
+    { icon: "🚀", label: "Rocket ሮኬት" },
+  ];
+
+  const BADGE_OPTIONS = [
+    "የሳምንቱ አሸናፊ 🏆",
+    "Gold Hunter 💰",
+    "የቢንጎ ጌታ 👑",
+    "Lucky Star 🌟",
+    "Speed Striker ⚡",
+    "Master Phoenix 🦅",
+  ];
+
+  const handleSaveWeeklyProfile = () => {
+    buzz([15, 30]);
+    const updated = {
+      ...player,
+      avatarIcon: selectedAvatar,
+      weeklyBadge: selectedBadge,
+      luckyNumber: luckyNumber,
+      weeklyFileNote: weeklyNote,
+    };
+    saveStoredPlayer(updated);
+    setPlayer(updated);
+    setIsEditingProfile(false);
+    addPlayerActivityLog({
+      type: "weekly_bonus",
+      title: "የሳምንቱ ፕሮፋይል ተዘምኗል (Profile Updated)",
+      description: `አዲስ ባጅ: ${selectedBadge} • ዕድለኛ ቁጥር: ${luckyNumber}`,
+    });
+    setSaveToast(true);
+    setTimeout(() => setSaveToast(false), 2500);
   };
 
   const toggleSound = () => {
@@ -111,6 +152,14 @@ export function ProfileView({
 
   return (
     <div className="mx-auto min-h-screen min-h-[100dvh] w-full max-w-2xl overflow-x-hidden pb-32">
+      {/* Save Success Toast */}
+      {saveToast && (
+        <div className="fixed top-12 left-1/2 -translate-x-1/2 z-50 flex items-center gap-2 rounded-2xl border border-emerald-500 bg-emerald-950/95 px-4 py-2.5 text-xs font-black text-emerald-300 shadow-2xl backdrop-blur-md animate-in fade-in">
+          <Check className="h-4 w-4 text-emerald-400 stroke-[3]" />
+          <span>✅ የሳምንቱ ፕሮፋይል እና ምርጫዎ በሚገባ ተቀምጧል!</span>
+        </div>
+      )}
+
       {/* Top Bar */}
       <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3 px-4 pt-5">
         <div>
@@ -118,7 +167,7 @@ export function ProfileView({
             {t("profile")}
           </h1>
           <p className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider">
-            Phoenix VIP Member
+            Phoenix VIP Member • የራስዎ መለያ ገፅ
           </p>
         </div>
         <LangToggle />
@@ -132,10 +181,10 @@ export function ProfileView({
 
           <div className="relative flex items-center justify-between">
             <div className="flex items-center gap-3">
-              <div className="relative cursor-pointer select-none" onClick={handleAvatarTap}>
-                <div className="grid h-15 w-15 place-items-center rounded-2xl bg-gradient-to-br from-amber-400 via-primary to-orange-600 p-0.5 shadow-glow-fire active:scale-95 transition-transform">
-                  <div className="grid h-full w-full place-items-center rounded-[14px] bg-background">
-                    <Bird className="h-8 w-8 text-primary" strokeWidth={2.2} />
+              <div className="relative select-none">
+                <div className="grid h-16 w-16 place-items-center rounded-2xl bg-gradient-to-br from-amber-400 via-primary to-orange-600 p-0.5 shadow-glow-fire">
+                  <div className="grid h-full w-full place-items-center rounded-[14px] bg-background text-2xl">
+                    {player.avatarIcon || "🦅"}
                   </div>
                 </div>
                 <div className="absolute -bottom-1 -right-1 grid h-5 w-5 place-items-center rounded-full bg-gold text-[10px] font-black text-black">
@@ -144,25 +193,52 @@ export function ProfileView({
               </div>
 
               <div>
-                <div className="flex items-center gap-1.5">
-                  <p className="text-lg font-black text-foreground">Amar</p>
+                <div className="flex items-center gap-1.5 flex-wrap">
+                  <p className="text-lg font-black text-foreground">{player.name || "ተጫዋች"}</p>
                   <span className="rounded-full bg-gold/20 px-2 py-0.5 text-[9px] font-black text-gold border border-gold/30">
                     VIP Lv.3
                   </span>
                 </div>
-                <p className="text-xs font-bold text-muted-foreground">
-                  0932***738 • #PX-8849
+                <div className="flex items-center gap-2 mt-0.5">
+                  <span className="rounded-md bg-primary/20 px-1.5 py-0.5 text-[10px] font-bold text-primary border border-primary/30">
+                    {player.weeklyBadge || "የሳምንቱ አሸናፊ 🏆"}
+                  </span>
+                  <span className="text-[11px] font-extrabold text-gold">
+                    ዕድለኛ ቁጥር: #{player.luckyNumber || 7}
+                  </span>
+                </div>
+                <p className="text-xs font-bold text-muted-foreground mt-0.5">
+                  {player.phone ? `${player.phone.slice(0, 4)}***${player.phone.slice(-3)}` : "ስልክ አልተያያዘም"} • #{player.id.slice(-6).toUpperCase()}
                 </p>
               </div>
             </div>
 
-            <div className="text-right">
+            <div className="text-right flex flex-col items-end gap-1.5">
               <span className="inline-flex items-center gap-1 rounded-full bg-emerald-500/10 px-2 py-0.5 text-[9px] font-bold text-emerald-400 border border-emerald-500/30">
                 <ShieldCheck className="h-3 w-3" />
                 Verified
               </span>
+              <button
+                type="button"
+                onClick={() => {
+                  buzz(10);
+                  setIsEditingProfile(!isEditingProfile);
+                }}
+                className="inline-flex items-center gap-1 rounded-xl border border-gold/40 bg-gold/15 px-2.5 py-1 text-[10px] font-black text-gold hover:bg-gold/30 active:scale-95 transition-all"
+              >
+                <Edit3 className="h-3 w-3" />
+                {isEditingProfile ? "ዝጋ" : "አስተካክል"}
+              </button>
             </div>
           </div>
+
+          {/* Player Personal Weekly Memo */}
+          {player.weeklyFileNote && (
+            <div className="relative mt-3.5 flex items-center gap-2 rounded-2xl border border-border/80 bg-black/40 px-3.5 py-2 text-xs font-medium text-amber-200/90">
+              <FileText className="h-4 w-4 text-gold shrink-0" />
+              <span className="italic truncate">"{player.weeklyFileNote}"</span>
+            </div>
+          )}
 
           {/* Level Progress */}
           <div className="relative mt-4 space-y-1">
@@ -185,7 +261,7 @@ export function ProfileView({
                 {t("gamesPlayed")}
               </p>
               <p className="mt-0.5 text-xl font-black tabular-nums text-foreground">
-                312
+                {player.gamesPlayed || 0}
               </p>
             </div>
 
@@ -194,7 +270,7 @@ export function ProfileView({
                 {t("totalWon")}
               </p>
               <p className="mt-0.5 text-xl font-black tabular-nums text-gold">
-                11,250 <span className="text-[10px]">ETB</span>
+                {(player.totalWon || 0).toFixed(2)} <span className="text-[10px]">ETB</span>
               </p>
             </div>
 
@@ -216,6 +292,175 @@ export function ProfileView({
                 3 Wins 🔥
               </p>
             </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Weekly Profile Customization Card */}
+      {isEditingProfile && (
+        <div className="px-4 pt-3 animate-in fade-in slide-in-from-top-3">
+          <div className="rounded-3xl border-2 border-gold/60 bg-gradient-to-b from-amber-950/70 via-card to-background p-4 shadow-card-soft">
+            <div className="flex items-center justify-between pb-3 border-b border-border/40">
+              <span className="flex items-center gap-1.5 text-xs font-black text-gold uppercase tracking-wider">
+                <Sparkles className="h-4 w-4 text-gold" />
+                የሳምንቱ ፕሮፋይል ምርጫ (Weekly Profile File)
+              </span>
+              <span className="text-[10px] font-bold text-muted-foreground">
+                በየሳምንቱ ይቀይሩ
+              </span>
+            </div>
+
+            {/* 1. Avatar Selection */}
+            <div className="mt-3">
+              <label className="text-[10px] font-black uppercase tracking-wider text-muted-foreground">
+                1. የአምሳል (Avatar) ምርጫ
+              </label>
+              <div className="mt-2 grid grid-cols-4 gap-2">
+                {AVATAR_OPTIONS.map((av) => (
+                  <button
+                    key={av.icon}
+                    type="button"
+                    onClick={() => {
+                      buzz(8);
+                      setSelectedAvatar(av.icon);
+                    }}
+                    className={cn(
+                      "flex flex-col items-center justify-center gap-1 rounded-2xl border p-2.5 transition-all active:scale-95",
+                      selectedAvatar === av.icon
+                        ? "border-gold bg-gold/20 text-gold shadow-glow-gold/10"
+                        : "border-border/60 bg-secondary/40 text-foreground hover:border-gold/40"
+                    )}
+                  >
+                    <span className="text-2xl">{av.icon}</span>
+                    <span className="text-[9px] font-extrabold truncate w-full text-center">{av.label.split(" ")[0]}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* 2. Badge Selection */}
+            <div className="mt-4">
+              <label className="text-[10px] font-black uppercase tracking-wider text-muted-foreground">
+                2. የሳምንቱ ማዕረግ / ባጅ (Weekly Badge)
+              </label>
+              <div className="mt-2 flex flex-wrap gap-1.5">
+                {BADGE_OPTIONS.map((badge) => (
+                  <button
+                    key={badge}
+                    type="button"
+                    onClick={() => {
+                      buzz(8);
+                      setSelectedBadge(badge);
+                    }}
+                    className={cn(
+                      "rounded-xl border px-3 py-1.5 text-xs font-extrabold transition-all active:scale-95",
+                      selectedBadge === badge
+                        ? "border-gold bg-gold text-black shadow-glow-gold/20 font-black"
+                        : "border-border/60 bg-secondary/40 text-muted-foreground hover:text-foreground"
+                    )}
+                  >
+                    {badge}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* 3. Lucky Number Selection */}
+            <div className="mt-4 grid grid-cols-2 gap-3">
+              <div>
+                <label className="text-[10px] font-black uppercase tracking-wider text-muted-foreground">
+                  3. ዕድለኛ ቁጥር (1-75)
+                </label>
+                <div className="mt-1.5 flex items-center gap-2">
+                  <input
+                    type="number"
+                    min={1}
+                    max={75}
+                    value={luckyNumber}
+                    onChange={(e) => setLuckyNumber(Math.max(1, Math.min(75, parseInt(e.target.value, 10) || 1)))}
+                    className="w-20 rounded-xl border border-gold/60 bg-black/60 px-3 py-2 text-center text-base font-black text-gold outline-none"
+                  />
+                  <span className="text-[10px] font-bold text-muted-foreground">
+                    በጨዋታው ላይ ቅድሚያ ይጠቁራል
+                  </span>
+                </div>
+              </div>
+
+              <div>
+                <label className="text-[10px] font-black uppercase tracking-wider text-muted-foreground">
+                  4. የሳምንቱ ማስታወሻ / ፋይል
+                </label>
+                <input
+                  type="text"
+                  maxLength={50}
+                  value={weeklyNote}
+                  onChange={(e) => setWeeklyNote(e.target.value)}
+                  placeholder="የዚህ ሳምንት ግቤ..."
+                  className="mt-1.5 w-full rounded-xl border border-border/80 bg-black/60 px-3 py-2 text-xs font-bold text-foreground outline-none focus:border-gold"
+                />
+              </div>
+            </div>
+
+            {/* Save Button */}
+            <button
+              type="button"
+              onClick={handleSaveWeeklyProfile}
+              className="mt-4 flex w-full items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-amber-400 via-gold to-yellow-500 py-3 text-xs font-black uppercase tracking-wider text-black shadow-glow-gold active:scale-95"
+            >
+              <Check className="h-4 w-4 stroke-[3]" />
+              ምርጫዬን መዝግብ (SAVE PROFILE)
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Weekly Activity Logs (ተጫዋቹ ያደረጋቸው ድርጊቶች ማሳያ) */}
+      <div className="px-4 pt-3">
+        <div className="rounded-3xl border border-border/80 bg-surface-grad p-4 shadow-card-soft">
+          <div className="flex items-center justify-between pb-2">
+            <p className="flex items-center gap-1.5 text-[10px] font-black uppercase tracking-widest text-muted-foreground">
+              <History className="h-3.5 w-3.5 text-primary" />
+              የሳምንቱ ድርጊቶች ታሪክ (Activity History)
+            </p>
+            <span className="rounded-full bg-emerald-500/10 px-2 py-0.5 text-[9px] font-extrabold text-emerald-400 border border-emerald-500/30">
+              Live Log
+            </span>
+          </div>
+
+          <div className="mt-2 space-y-2 max-h-64 overflow-y-auto pr-1">
+            {player.weeklyLogs && player.weeklyLogs.length > 0 ? (
+              player.weeklyLogs.map((log) => (
+                <div
+                  key={log.id}
+                  className="flex items-center justify-between rounded-2xl border border-border/60 bg-black/40 p-2.5 text-left"
+                >
+                  <div className="flex items-center gap-2.5">
+                    <div className="grid h-8 w-8 place-items-center rounded-xl bg-gold/10 text-gold font-black text-sm">
+                      {log.type === "game_win" ? "🏆" : log.type === "deposit" ? "💳" : log.type === "ticket_bought" ? "🎟️" : "⭐"}
+                    </div>
+                    <div>
+                      <p className="text-xs font-black text-foreground">{log.title}</p>
+                      <p className="text-[10px] font-bold text-muted-foreground">{log.description}</p>
+                    </div>
+                  </div>
+                  <span className="text-[9px] font-bold text-muted-foreground/80 shrink-0">
+                    {log.timestamp}
+                  </span>
+                </div>
+              ))
+            ) : (
+              <div className="py-6 text-center">
+                <div className="mx-auto grid h-10 w-10 place-items-center rounded-2xl bg-secondary/60 text-muted-foreground text-lg">
+                  📋
+                </div>
+                <p className="mt-2 text-xs font-black text-muted-foreground">
+                  እስካሁን ምንም የተመዘገበ ድርጊት የለም
+                </p>
+                <p className="text-[10px] font-bold text-muted-foreground/70">
+                  ካርቴላ ሲገዙ፣ ሲያሸንፉና ገንዘብ ሲያስገቡ እዚህ ይዘረዘራሉ!
+                </p>
+              </div>
+            )}
           </div>
         </div>
       </div>
@@ -401,7 +646,7 @@ export function ProfileView({
                 </p>
 
                 <p className="flex items-start gap-2">
-                  href="https://t.me/Phonix_s"
+                  <span className="shrink-0 text-base leading-none">3️⃣</span>
                   <span>
                     <strong className="text-sky-400 font-bold">የጨዋታው ሂደት:</strong> ካርድ ሲገዙ ከ 1 እስከ 75 ባሉት ቁጥሮች የተሞላ 5x5 ካርቴላ ይሰጥዎታል። ጨዋታው ሲጀመር ሲስተሙ በየ 3 ሰከንዱ ቁጥሮችን ይጠራል። ሲስተሙ ራሱ ያጠቁርልዎታል (ምንም መንካት አይጠበቅብዎትም)።
                   </span>
@@ -418,23 +663,23 @@ export function ProfileView({
       {/* Telegram Support & Channel Direct Buttons */}
       <div className="px-4 pt-3 grid grid-cols-2 gap-2">
         <a
-          href="https://t.me"
+          href="https://t.me/Phonix_s"
           target="_blank"
           rel="noreferrer"
           className="flex items-center justify-center gap-2 rounded-2xl border border-sky-500/40 bg-sky-500/10 p-3 text-xs font-black text-sky-400 active:scale-95"
         >
           <Send className="h-4 w-4" />
-          Support Bot 🤖
+          Support Admin 💬
         </a>
 
         <a
-          href="https://t.me"
+          href="https://t.me/Phoenix_Bingo_Bot"
           target="_blank"
           rel="noreferrer"
           className="flex items-center justify-center gap-2 rounded-2xl border border-gold/40 bg-gold/10 p-3 text-xs font-black text-gold active:scale-95"
         >
           <Sparkles className="h-4 w-4" />
-          Official Channel 📢
+          Play on Bot 🎮
         </a>
       </div>
 
@@ -517,76 +762,6 @@ export function ProfileView({
                 {passDone ? "Updated!" : t("confirm")}
               </button>
             </div>
-          </div>
-        </div>
-      )}
-      {/* Hidden Secret Master Access Modal (Owner Only) */}
-      {showSecretModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/90 p-4 backdrop-blur-md animate-in fade-in">
-          <div className="w-full max-w-[360px] rounded-3xl border border-gold/60 bg-[#161b22] p-5 text-left shadow-2xl">
-            <div className="flex items-center justify-between border-b border-gold/30 pb-3">
-              <div className="flex items-center gap-2 text-gold">
-                <Lock className="h-5 w-5" />
-                <h3 className="text-sm font-black uppercase tracking-wider">
-                  🔐 Master System Gate
-                </h3>
-              </div>
-              <button
-                type="button"
-                onClick={() => setShowSecretModal(false)}
-                className="text-xs text-slate-400 hover:text-white px-2 py-1"
-              >
-                ✕
-              </button>
-            </div>
-
-            <p className="mt-3 text-xs text-slate-300">
-              ይህ ማዕከል ለዋናው አድሚን ብቻ የተፈቀደ ምስጢራዊ መግቢያ ነው።
-            </p>
-
-            <div className="mt-4 space-y-2.5">
-              <button
-                type="button"
-                onClick={() => {
-                  setShowSecretModal(false);
-                  buzz(12);
-                  if (onNavigateAdmin) onNavigateAdmin();
-                  else window.location.hash = "admin";
-                }}
-                className="w-full flex items-center justify-between rounded-2xl border border-emerald-500/60 bg-emerald-500/15 p-3.5 text-left text-emerald-400 hover:bg-emerald-500/25 active:scale-95 transition-all"
-              >
-                <div className="flex items-center gap-2 font-black text-xs">
-                  <Shield className="h-4 w-4" />
-                  <span>Admin Operations Panel</span>
-                </div>
-                <span className="text-[10px] text-slate-400 font-bold">Babi2204 →</span>
-              </button>
-
-              <button
-                type="button"
-                onClick={() => {
-                  setShowSecretModal(false);
-                  buzz(12);
-                  if (onNavigateFinance) onNavigateFinance();
-                  else window.location.hash = "finance";
-                }}
-                className="w-full flex items-center justify-between rounded-2xl border border-gold/60 bg-gold/15 p-3.5 text-left text-gold hover:bg-gold/25 active:scale-95 transition-all"
-              >
-                <div className="flex items-center gap-2 font-black text-xs">
-                  <Landmark className="h-4 w-4" />
-                  <span>Finance & 70/30 Profit Suite</span>
-                </div>
-                <span className="text-[10px] text-slate-400 font-bold">papi2204 →</span>
-              </button>
-            </div>
-
-            <button
-              type="button"
-              onClick={() => setShowSecretModal(false)}
-              className="mt-4 w-full rounded-xl border border-slate-700 bg-slate-800/80 py-2.5 text-xs font-bold text-slate-300 hover:text-white"
-            >
-              ዝጋ (Close Gate)
-            </button>
           </div>
         </div>
       )}
