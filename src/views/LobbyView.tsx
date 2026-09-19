@@ -171,16 +171,18 @@ export function LobbyView({
             <span className="text-[9px] font-black text-muted-foreground uppercase tracking-wider">
               {isGameStarted
                 ? "በሂደት ላይ"
+                : totalRoomTickets === 0
+                ? "ተጫዋቾችን በመጠበቅ ላይ"
                 : waitingForPlayers
                 ? "ተጋጣሚ በመጠበቅ ላይ"
-                : totalRoomTickets === 0
-                ? "የሚቀጥለው ዙር"
                 : "የሚጀምርበት ጊዜ"}
             </span>
             <span className="text-sm font-black text-primary tabular-nums flex items-center gap-1.5 mt-0.5">
               <Timer className="h-3.5 w-3.5 text-primary shrink-0 animate-pulse" />
               {isGameStarted
                 ? "ተጀምሯል!"
+                : totalRoomTickets === 0
+                ? "ካርቴላ ይምረጡ"
                 : waitingForPlayers
                 ? "ቢያንስ 2 ተጫዋች"
                 : `${mm}:${ss}`}
@@ -189,7 +191,14 @@ export function LobbyView({
         </div>
       </div>
 
-      {waitingForPlayers && (
+      {totalRoomTickets === 0 && (
+        <div className="mx-3 mt-2.5 flex items-center justify-center gap-2 rounded-2xl border border-gold/40 bg-gold/10 px-3 py-2.5 text-xs font-black text-gold shadow-sm">
+          <Coins className="h-4 w-4 shrink-0 text-gold animate-bounce" />
+          <span>ጨዋታው እንዲጀምር ከታች ካሉት ካርቴላዎች ውስጥ ይምረጡ (+10 ETB የቀጥታ ጃክፖት)!</span>
+        </div>
+      )}
+
+      {waitingForPlayers && totalRoomTickets > 0 && (
         <div className="mx-3 mt-2.5 flex items-center justify-center gap-2 rounded-2xl border border-amber-500/40 bg-amber-500/10 px-3 py-2.5 text-xs font-black text-amber-400 shadow-sm animate-pulse">
           <Users className="h-4 w-4 shrink-0 text-amber-400" />
           <span>ጨዋታው ለመጀመር ቢያንስ 2 ተጫዋቾች ያስፈልጋሉ። ሌላ ተጫዋች በመጠበቅ ላይ...</span>
@@ -212,6 +221,28 @@ export function LobbyView({
         <span className="shrink-0 rounded-full border border-border/80 bg-secondary px-2 py-0.5 text-[11px] font-black tabular-nums text-muted-foreground whitespace-nowrap">
           የመረጡት: {pendingTickets.length} / {MAX_SELECT}
         </span>
+      </div>
+
+      {/* Real-time Server Sync Indicator & Taken Counter */}
+      <div className="mx-3 mt-2 flex flex-wrap items-center justify-between gap-2 rounded-2xl border border-emerald-500/30 bg-emerald-950/20 px-3 py-1.5 text-xs">
+        <div className="flex items-center gap-2">
+          <span className="relative flex h-2 w-2">
+            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+            <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
+          </span>
+          <span className="font-black text-emerald-400 text-[11px] tracking-wide">
+            🔴 የቀጥታ ሰርቨር የተመሳሰለ (Master Clock Live)
+          </span>
+        </div>
+        <div className="flex items-center gap-2 font-mono text-[11px]">
+          <span className="text-slate-400">
+            የተያዙ: <b className="text-rose-400 font-black">{takenTickets.length}</b>
+          </span>
+          <span className="text-slate-600">|</span>
+          <span className="text-slate-400">
+            የቀሩ: <b className="text-emerald-400 font-black">{Math.max(0, TOTAL_TICKETS - takenTickets.length)}</b>
+          </span>
+        </div>
       </div>
 
       {/* Full Page Ticket Selection Grid */}
