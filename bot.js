@@ -109,8 +109,10 @@ function checkBingoPattern(grid) {
 }
 
 function evaluateWinner(tickets, balls) {
-  if (tickets.length === 0) return { winningTicket: 1, winningBallCount: 20 };
+  if (!tickets || tickets.length === 0) return { winningTicket: 0, winningBallCount: 0 };
   const boards = tickets.map((t) => ({ t, cells: generateBoard(t) }));
+
+  // 1. Check for complete Bingo pattern in balls 4 to 20
   for (let k = 4; k <= 20; k++) {
     const drawnSet = new Set(balls.slice(0, k));
     for (const b of boards) {
@@ -123,7 +125,26 @@ function evaluateWinner(tickets, balls) {
       }
     }
   }
-  return { winningTicket: tickets[0] || 1, winningBallCount: 20 };
+
+  // 2. If no card hits full 5-line Bingo by ball 20, the ticket with highest matches among participants wins!
+  const drawnSet20 = new Set(balls.slice(0, 20));
+  let bestTicket = tickets[0];
+  let maxMatched = -1;
+
+  for (const b of boards) {
+    let matched = 0;
+    b.cells.forEach((cell) => {
+      if (cell.value === "FREE" || (typeof cell.value === "number" && drawnSet20.has(cell.value))) {
+        matched++;
+      }
+    });
+    if (matched > maxMatched) {
+      maxMatched = matched;
+      bestTicket = b.t;
+    }
+  }
+
+  return { winningTicket: bestTicket, winningBallCount: 20 };
 }
 
 function getDeterministicOpponents(roundId) {
@@ -131,79 +152,192 @@ function getDeterministicOpponents(roundId) {
   return [];
 }
 
-function getOrCreateBotRound(roundId) {
-  let roundMap = botRoundsMap.get(roundId);
-  if (!roundMap) {
-    roundMap = new Map();
-    botRoundsMap.set(roundId, roundMap);
+const ETHIOPIAN_BOT_NAMES = [
+  "አበበ ተፈራ", "ጫላ ደበሌ", "መሰረት አበራ", "ዳዊት ታደሰ", "ሄለን ግርማ",
+  "ኪሩቤል አለሙ", "ትዕግስት በቀለ", "ቢኒያም ሀይሉ", "ሳራ ካሳ", "ኤልያስ ፍቃዱ",
+  "ራሄል ታዬ", "ተስፋዬ ወርቁ", "ማርታ በቀለ", "ናሆም ጌታቸው", "ሰላማዊት ደስታ",
+  "ዮናስ መኮንን", "ቤቴልሄም ጥላሁን", "ብርሃኑ ዘውዴ", "ህይወት አሰፋ", "ግርማ ወልዴ",
+  "ታምራት በቀለ", "አስቴር ካሳሁን", "ሙሉጌታ ገብሬ", "ሮዛ ሃይሌ", "ሰለሞን ታደሰ",
+  "ፋሲል መንግስቱ", "ዘውዱ አያሌው", "ፅጌረዳ አለማየሁ", "ወንድሙ ገላው", "አሸናፊ ዘለቀ"
+];
+
+function generateBotPhone() {
+  const prefixes = ["0911", "0912", "0920", "0923", "0934", "0945", "0978", "0913", "0918", "0929"];
+  const prefix = prefixes[Math.floor(Math.random() * prefixes.length)];
+  const suffix = Math.floor(10 + Math.random() * 90);
+  return `${prefix}***${suffix}`;
+}
+
+let serverBotSettings = {
+  isBotSystemActive: false,
+  minBots: 0,
+  maxBots: 0,
+  botWinnerForce: "ai",
+};
+
+function injectBotsIntoRound(roundData, count) {
+  const available = [];
+  for (let i = 1; i <= 520; i++) {
+    if (!roundData.tickets.has(i)) available.push(i);
   }
-  if (botRoundsMap.size > 8) {
+  for (let i = available.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [available[i], available[j]] = [available[j], available[i]];
+  }
+
+  const toAdd = Math.min(count, available.length);
+  for (let i = 0; i < toAdd; i++) {
+    const ticketNum = available[i];
+    const name = ETHIOPIAN_BOT_NAMES[Math.floor(Math.random() * ETHIOPIAN_BOT_NAMES.length)];
+    const phone = generateBotPhone();
+    const botId = `bot_${Math.random().toString(36).substring(2, 8)}`;
+    roundData.tickets.set(ticketNum, {
+      userId: botId,
+      userName: name,
+      userPhone: phone,
+      time: Date.now(),
+    });
+  }
+
+  if (toAdd > 0 && !roundData.firstTicketAt) {
+    roundData.firstTicketAt = Date.now();
+  }
+}
+
+let customLobbyMs = 45000;
+let currentRoundId = Math.floor(Date.now() / 100000);
+const sseClients = new Set();
+
+function getOrCreateBotRound(roundId) {
+  let roundData = botRoundsMap.get(roundId);
+  if (!roundData) {
+    roundData = {
+      tickets: new Map(),
+      firstTicketAt: null,
+      forcedStartAt: null,
+    };
+    botRoundsMap.set(roundId, roundData);
+  }
+  if (botRoundsMap.size > 15) {
     for (const rId of botRoundsMap.keys()) {
       if (rId < roundId - 5) botRoundsMap.delete(rId);
     }
   }
-  return roundMap;
+  return roundData;
 }
-
-let customLobbyMs = 45000;
-let roundOffset = 0;
-let forceGameStartAt = null;
-const sseClients = new Set();
 
 function getMasterRoomState() {
   const now = Date.now();
+  const roundData = getOrCreateBotRound(currentRoundId);
+  const allTaken = Array.from(roundData.tickets.keys());
+
+  // 1. IF NO TICKETS ARE TAKEN: THE GAME NEVER STARTS! IT STAYS IN LOBBY WAITING FOR PLAYERS!
+  if (allTaken.length === 0) {
+    roundData.firstTicketAt = null;
+    roundData.forcedStartAt = null;
+    return {
+      success: true,
+      serverTime: now,
+      roundId: currentRoundId,
+      phase: "lobby",
+      countdown: Math.round(customLobbyMs / 1000),
+      elapsedInRound: 0,
+      drawnBalls: [],
+      currentBall: null,
+      totalRoomTickets: 0,
+      takenTickets: [],
+      takenDetails: {},
+      jackpot: 0,
+      winnerInfo: null,
+      playersCount: 0,
+      lobbyDuration: customLobbyMs,
+    };
+  }
+
+  // 2. AT LEAST ONE TICKET IS TAKEN: Start countdown if not started!
+  if (!roundData.firstTicketAt) {
+    roundData.firstTicketAt = now;
+  }
+
+  let elapsed = now - roundData.firstTicketAt;
+  if (roundData.forcedStartAt && now >= roundData.forcedStartAt && elapsed < customLobbyMs) {
+    elapsed = customLobbyMs + (now - roundData.forcedStartAt);
+  }
+
   const roundDuration = customLobbyMs + CALLING_MS + VICTORY_MS;
-  const baseRoundId = Math.floor(now / roundDuration);
-  const currentRoundId = baseRoundId + roundOffset;
-  let elapsed = now % roundDuration;
+  const balls = getDeterministicBalls(currentRoundId);
 
   let phase = "lobby";
   let countdown = 0;
-
-  if (forceGameStartAt && now >= forceGameStartAt && elapsed < customLobbyMs) {
-    elapsed = customLobbyMs + (now - forceGameStartAt);
-  }
-
-  const balls = getDeterministicBalls(currentRoundId);
   let drawnBalls = [];
 
   if (elapsed < customLobbyMs) {
+    // 2A. Lobby Betting Phase
     phase = "lobby";
     countdown = Math.max(0, Math.ceil((customLobbyMs - elapsed) / 1000));
     drawnBalls = [];
   } else if (elapsed < customLobbyMs + CALLING_MS) {
+    // 2B. Live Calling Phase
     phase = "game";
     countdown = 0;
     const gameElapsed = elapsed - customLobbyMs;
     const count = Math.min(20, Math.floor(gameElapsed / BALL_INTERVAL_MS) + 1);
     drawnBalls = balls.slice(0, count).reverse();
-  } else {
+  } else if (elapsed < roundDuration) {
+    // 2C. Victory Celebration Phase
     phase = "victory";
     countdown = Math.max(0, Math.ceil((roundDuration - elapsed) / 1000));
     drawnBalls = balls.slice(0, 20).reverse();
+  } else {
+    // 2D. Victory finished! Advance cleanly to next round
+    currentRoundId += 1;
+    const nextRound = getOrCreateBotRound(currentRoundId);
+    if (serverBotSettings.isBotSystemActive && (serverBotSettings.minBots || 0) > 0) {
+      const botMin = Math.max(1, serverBotSettings.minBots);
+      const botMax = Math.max(botMin, serverBotSettings.maxBots || botMin);
+      const count = Math.floor(Math.random() * (botMax - botMin + 1)) + botMin;
+      injectBotsIntoRound(nextRound, count);
+    }
+    return {
+      success: true,
+      serverTime: now,
+      roundId: currentRoundId,
+      phase: "lobby",
+      countdown: Math.round(customLobbyMs / 1000),
+      elapsedInRound: 0,
+      drawnBalls: [],
+      currentBall: null,
+      totalRoomTickets: nextRound.tickets.size,
+      takenTickets: Array.from(nextRound.tickets.keys()),
+      takenDetails: {},
+      jackpot: nextRound.tickets.size * 10,
+      winnerInfo: null,
+      playersCount: 0,
+      lobbyDuration: customLobbyMs,
+    };
   }
 
   const currentBall = drawnBalls[0] || null;
-  const roundMap = getOrCreateBotRound(currentRoundId);
-  const allTaken = Array.from(roundMap.keys());
-
   const details = {};
   const uniqueUsers = new Set();
 
-  for (const [tNum, info] of roundMap.entries()) {
+  for (const [tNum, info] of roundData.tickets.entries()) {
     details[tNum] = { userId: info.userId, userName: info.userName, userPhone: info.userPhone };
     uniqueUsers.add(info.userId);
   }
 
+  // Evaluate winner strictly among participating tickets
   const { winningTicket, winningBallCount } = evaluateWinner(allTaken, balls);
   const winnerRecord = winningTicket ? details[winningTicket] : null;
-  const winnerInfo = {
-    ticket: winningTicket || 0,
-    winningBallCount: winningBallCount || 20,
-    name: winnerRecord?.userName || (winningTicket ? "ተጫዋች" : ""),
-    phone: winnerRecord?.userPhone || "",
-    userId: winnerRecord?.userId || "",
-  };
+  const winnerInfo = winningTicket
+    ? {
+        ticket: winningTicket,
+        winningBallCount: winningBallCount || 20,
+        name: winnerRecord?.userName || "ተጫዋች",
+        phone: winnerRecord?.userPhone || "",
+        userId: winnerRecord?.userId || "",
+      }
+    : null;
 
   const totalRoomTickets = allTaken.length;
   const jackpot = totalRoomTickets * 10;
@@ -360,6 +494,40 @@ http.createServer((req, res) => {
           forceGameStartAt = null;
         } else if (action === "set_lobby_seconds" && typeof lobbySeconds === "number") {
           customLobbyMs = Math.max(10000, Math.min(120000, lobbySeconds * 1000));
+        } else if (action === "inject_bots") {
+          const state = getMasterRoomState();
+          const roundData = getOrCreateBotRound(state.roundId);
+          const count = typeof body.botCount === "number" ? Math.max(1, Math.min(200, body.botCount)) : 10;
+          injectBotsIntoRound(roundData, count);
+        } else if (action === "clear_bots") {
+          const state = getMasterRoomState();
+          const roundData = getOrCreateBotRound(state.roundId);
+          for (const [tNum, info] of Array.from(roundData.tickets.entries())) {
+            if (info.userId.startsWith("bot_")) {
+              roundData.tickets.delete(tNum);
+            }
+          }
+          if (roundData.tickets.size === 0) {
+            roundData.firstTicketAt = null;
+            roundData.forcedStartAt = null;
+          }
+        } else if (action === "update_bot_settings" && body.botSettings) {
+          serverBotSettings = { ...serverBotSettings, ...body.botSettings };
+          const state = getMasterRoomState();
+          const roundData = getOrCreateBotRound(state.roundId);
+          if (serverBotSettings.isBotSystemActive && roundData.tickets.size === 0 && (serverBotSettings.minBots || 10) > 0) {
+            injectBotsIntoRound(roundData, serverBotSettings.minBots || 10);
+          } else if (!serverBotSettings.isBotSystemActive) {
+            for (const [tNum, info] of Array.from(roundData.tickets.entries())) {
+              if (info.userId.startsWith("bot_")) {
+                roundData.tickets.delete(tNum);
+              }
+            }
+            if (roundData.tickets.size === 0) {
+              roundData.firstTicketAt = null;
+              roundData.forcedStartAt = null;
+            }
+          }
         } else if (action === "reset") {
           forceGameStartAt = null;
           const state = getMasterRoomState();
