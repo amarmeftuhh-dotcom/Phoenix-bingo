@@ -313,11 +313,12 @@ export function getLiveRoundSnapshot(
 
   // If NO tickets are taken by any player in this room: NEVER start game! Stay in lobby waiting!
   if (totalRoomTickets === 0) {
+    const lobbyRemaining = Math.max(0, Math.ceil((LOBBY_MS - (elapsedInRound % LOBBY_MS)) / 1000));
     return {
       roundId,
       phase: "lobby",
-      countdown: Math.round(LOBBY_MS / 1000),
-      elapsedInRound: 0,
+      countdown: lobbyRemaining,
+      elapsedInRound,
       isGameStarted: false,
       canStart: false,
       waitingForPlayers: true,
