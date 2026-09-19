@@ -211,7 +211,7 @@ function injectBotsIntoRound(roundData: ServerRoundData, count: number) {
 function liveRoomSyncPlugin(): Plugin {
   // Master Clock & Room Store
   let customLobbyMs = 45000;
-  let currentRoundId = Math.floor(Date.now() / 100000);
+  let currentRoundId = Math.floor(Date.now() / ROUND_DURATION_MS);
 
   const roundsMap = new Map<number, ServerRoundData>();
 
@@ -469,7 +469,7 @@ function liveRoomSyncPlugin(): Plugin {
               }
 
               const currentState = getMasterRoomState();
-              const effectiveRoundId = typeof roundId === 'number' ? roundId : currentState.roundId;
+              const effectiveRoundId = currentState.roundId;
               const roundData = getOrCreateRound(effectiveRoundId);
 
               // Check if ticket is already taken by a different user
@@ -527,10 +527,10 @@ function liveRoomSyncPlugin(): Plugin {
           req.on('end', () => {
             try {
               const body = JSON.parse(bodyStr || '{}');
-              const { roundId, ticketNum, userId } = body;
+              const { ticketNum, userId } = body;
 
               const currentState = getMasterRoomState();
-              const effectiveRoundId = typeof roundId === 'number' ? roundId : currentState.roundId;
+              const effectiveRoundId = currentState.roundId;
               const roundData = getOrCreateRound(effectiveRoundId);
               const existing = roundData.tickets.get(ticketNum);
 
