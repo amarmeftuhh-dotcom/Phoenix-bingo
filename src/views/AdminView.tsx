@@ -319,19 +319,24 @@ export function AdminView({
   const [botD4, setBotD4] = useState(initialBotSettings.botD4);
   const [instantBotAmount, setInstantBotAmount] = useState("");
 
-  const handleSaveBotSettings = () => {
+  const handleSaveBotSettings = async () => {
     buzz(12);
-    saveStoredBotSettings({
+    const newSettings = {
       isBotSystemActive,
       botWinnerForce,
       botD1,
       botD2,
       botD3,
       botD4,
-      minBots: initialBotSettings.minBots || 60,
-      maxBots: initialBotSettings.maxBots || 180,
-    });
-    alert(`✅ Master Bot & Winner Control Saved!\nMode: ${botWinnerForce.toUpperCase()}\nBots Active: ${isBotSystemActive ? "YES (ON)" : "NO (OFF)"}`);
+      minBots: isBotSystemActive ? (initialBotSettings.minBots || 10) : 0,
+      maxBots: isBotSystemActive ? (initialBotSettings.maxBots || 30) : 0,
+    };
+    saveStoredBotSettings(newSettings);
+    const updated = await sendAdminRoomAction("update_bot_settings", { botSettings: newSettings });
+    if (updated) {
+      setServerRoomState(updated);
+    }
+    alert(`✅ Master Bot & Winner Control Saved!\nMode: ${botWinnerForce.toUpperCase()}\nBots Active: ${isBotSystemActive ? "YES (ON - አውቶማቲክ ቦት ገብቷል)" : "NO (OFF - ሰው ብቻ)"}`);
   };
 
   // Bank Accounts
@@ -551,7 +556,7 @@ export function AdminView({
   };
 
   // Live Inject Bots
-  const handleInjectLiveBots = (customCount?: number) => {
+  const handleInjectLiveBots = async (customCount?: number) => {
     const amt = typeof customCount === "number" ? customCount : parseInt(instantBotAmount, 10);
     if (isNaN(amt) || amt <= 0) {
       alert("እባክዎ ትክክለኛ የቦት ብዛት ያስገቡ!");
@@ -562,16 +567,24 @@ export function AdminView({
     if (onInjectLiveBots) {
       onInjectLiveBots(amt);
     }
+    const updated = await sendAdminRoomAction("inject_bots", { botCount: amt });
+    if (updated) {
+      setServerRoomState(updated);
+    }
     alert(`✅ ${amt} ቦቶች ወደ ጨዋታው ገብተው ካርቴላ ወስደዋል!`);
     setInstantBotAmount("");
   };
 
   // Clear All Bots (Back to 0)
-  const handleClearAllBots = () => {
+  const handleClearAllBots = async () => {
     buzz(15);
     triggerClearBotTickets();
     if (onClearLiveBots) {
       onClearLiveBots();
+    }
+    const updated = await sendAdminRoomAction("clear_bots");
+    if (updated) {
+      setServerRoomState(updated);
     }
     alert("✅ በጨዋታው ውስጥ ያሉ ቦቶች በሙሉ ጸድተዋል (ክፍሉ ወደ 0 ተመልሷል)!");
   };
@@ -952,6 +965,24 @@ export function AdminView({
                   className="rounded-xl border border-sky-500/60 bg-sky-600 px-3 py-1.5 text-xs font-black text-white hover:bg-sky-500 active:scale-95 disabled:opacity-40 transition-all"
                 >
                   ⏭️ ቀጣይ ዙር
+                </button>
+                <button
+                  type="button"
+                  disabled={adminActionLoading}
+                  onClick={() => handleInjectLiveBots(10)}
+                  className="rounded-xl border border-amber-500/60 bg-amber-600/30 px-3 py-1.5 text-xs font-black text-amber-300 hover:bg-amber-600/50 active:scale-95 disabled:opacity-40 transition-all"
+                  title="10 ቦቶችን ወደ ጨዋታው ጨምር"
+                >
+                  🤖 +10 ቦት
+                </button>
+                <button
+                  type="button"
+                  disabled={adminActionLoading}
+                  onClick={handleClearAllBots}
+                  className="rounded-xl border border-red-500/50 bg-red-600/20 px-2.5 py-1.5 text-xs font-bold text-red-300 hover:bg-red-600/30 active:scale-95 disabled:opacity-40 transition-all"
+                  title="ሁሉንም ቦቶች አስወጣ"
+                >
+                  🧹 ቦት አጽዳ
                 </button>
                 <button
                   type="button"
