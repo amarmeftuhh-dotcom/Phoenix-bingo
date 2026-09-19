@@ -308,9 +308,6 @@ export function App() {
       });
 
       const effectiveRoundId = serverState?.roundId ?? snap.roundId;
-      const effectivePhase = serverState?.phase ?? snap.phase;
-      const effectiveCountdown = serverState?.countdown ?? snap.countdown;
-      const effectiveDrawnBalls = serverState?.drawnBalls ?? snap.drawnBalls;
       const allKnownTaken = Array.from(new Set([...(serverState?.takenTickets || []), ...serverTakenTickets]));
       const effectiveTakenTickets = allKnownTaken.filter(
         (t) => !activeUserTickets.includes(t)
@@ -322,6 +319,18 @@ export function App() {
       const effectiveJackpot = typeof serverState?.jackpot === "number"
         ? serverState.jackpot
         : (effectiveTotalTickets * 10);
+
+      // CRITICAL: If no active cards are taken across the room:
+      // The game NEVER starts, never calls balls, never chooses winners, and countdown stays ready at 45s!
+      let effectivePhase = serverState?.phase ?? snap.phase;
+      let effectiveCountdown = serverState?.countdown ?? snap.countdown;
+      let effectiveDrawnBalls = serverState?.drawnBalls ?? snap.drawnBalls;
+
+      if (effectiveTotalTickets === 0) {
+        effectivePhase = "lobby";
+        effectiveCountdown = 45;
+        effectiveDrawnBalls = [];
+      }
 
       // A. New Round Rollover (Epoch boundary reached)
       if (effectiveRoundId !== currentRoundId) {
@@ -351,10 +360,11 @@ export function App() {
       setWaitingForPlayers(effectiveTotalTickets === 0 && effectivePhase === "lobby");
 
       // C. Sync Phases
-      if (effectivePhase === "lobby") {
+      if (effectivePhase === "lobby" || effectiveTotalTickets === 0) {
         setIsGameStarted(false);
         setWon(false);
         setDrawn([]);
+        lastDrawnCountRef.current = 0;
       } else if (effectivePhase === "game") {
         setIsGameStarted(true);
 
@@ -613,7 +623,7 @@ export function App() {
     setPlayWallet((prev) => prev + 25);
     setShowPromoFloat(false);
     addPlayerActivityLog({
-      type: "bonus",
+      type: "weekly_bonus",
       title: "🎁 የ 25 ETB የፍሎት ቦነስ ተቀብለዋል",
       description: "በአድሚኑ የተለቀቀውን የፍጥነት ቦነስ አግኝተዋል",
       amount: 25,
@@ -630,7 +640,7 @@ export function App() {
     if (["SPARKVIP", "PHOENIX10", "BONUS20", "WELCOME", "VIP", "BINGO"].includes(code)) {
       setPlayWallet((prev) => prev + 50);
       addPlayerActivityLog({
-        type: "bonus",
+        type: "weekly_bonus",
         title: `🎁 ፕሮሞ ኮድ ተጠቅመዋል (+50 ETB)`,
         description: `የተጠቀሙት ኮድ: ${code}`,
         amount: 50,
@@ -740,8 +750,8 @@ export function App() {
           </div>
         )}
 
-        {/* GameView (Tickets Page) - Replaces Home when game is active */}
-        <div className={activeTab === "game" || (activeTab === "home" && isGameStarted) ? "block" : "hidden"}>
+        {/* GameView (Tickets Page) - Replaces Home ONLY when user has active tickets and game is started */}
+        <div className={activeTab === "game" || (activeTab === "home" && isGameStarted && activeTickets.length > 0) ? "block" : "hidden"}>
           <GameView
             selectedTickets={activeTickets}
             globalCountdown={globalCountdown}
@@ -757,7 +767,7 @@ export function App() {
           />
         </div>
 
-        {activeTab === "home" && !isGameStarted && (
+        {activeTab === "home" && (!isGameStarted || activeTickets.length === 0) && (
           <LobbyView
             pendingTickets={pendingTickets}
             setPendingTickets={setPendingTickets}
@@ -766,8 +776,8 @@ export function App() {
             mainWallet={mainWallet}
             playWallet={playWallet}
             globalCountdown={globalCountdown}
-            isGameStarted={isGameStarted}
-            waitingForPlayers={waitingForPlayers}
+            isGameStarted={isGameStarted && activeTickets.length > 0}
+            waitingForPlayers={waitingForPlayers || totalRoomTickets === 0}
             onStartGame={handleManualStart}
             onNavigateWallet={() => setActiveTab("wallet")}
             announcementText={announcementText}
@@ -890,7 +900,7 @@ export function App() {
 
         {/* Victory celebration modal */}
         <VictoryModal
-          open={won}
+          open={won && (activeTickets.length > 0 || activeTab === "game")}
           prize={liveJackpot}
           winners={winners}
           onNextRound={handleNextRound}
