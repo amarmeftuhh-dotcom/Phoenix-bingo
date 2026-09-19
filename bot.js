@@ -205,7 +205,7 @@ function injectBotsIntoRound(roundData, count) {
 }
 
 let customLobbyMs = 45000;
-let currentRoundId = Math.floor(Date.now() / 100000);
+let currentRoundId = Math.floor(Date.now() / ROUND_DURATION_MS);
 const sseClients = new Set();
 
 function getOrCreateBotRound(roundId) {
@@ -429,7 +429,7 @@ http.createServer((req, res) => {
       try {
         const body = JSON.parse(bodyStr || "{}");
         const currentState = getMasterRoomState();
-        const roundId = typeof body.roundId === "number" ? body.roundId : currentState.roundId;
+        const roundId = currentState.roundId;
         const roundMap = getOrCreateBotRound(roundId);
 
         if (body.ticketNum && body.userId) {
@@ -461,7 +461,7 @@ http.createServer((req, res) => {
       try {
         const body = JSON.parse(bodyStr || "{}");
         const currentState = getMasterRoomState();
-        const roundId = typeof body.roundId === "number" ? body.roundId : currentState.roundId;
+        const roundId = currentState.roundId;
         const roundMap = getOrCreateBotRound(roundId);
         if (body.ticketNum) {
           roundMap.delete(body.ticketNum);
