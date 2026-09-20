@@ -312,8 +312,9 @@ export function getLiveRoundSnapshot(
   const jackpot = totalRoomTickets * 10;
 
   // If NO tickets are taken by any player in this room: NEVER start game! Stay in lobby waiting!
+  // Continuously countdown 45 -> 1 -> 45 in an unbroken loop until a player enters
   if (totalRoomTickets === 0) {
-    const lobbyRemaining = Math.max(0, Math.ceil((LOBBY_MS - (elapsedInRound % LOBBY_MS)) / 1000));
+    const lobbyRemaining = Math.max(1, Math.ceil((LOBBY_MS - (now % LOBBY_MS)) / 1000));
     return {
       roundId,
       phase: "lobby",
