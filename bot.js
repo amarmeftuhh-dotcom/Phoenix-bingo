@@ -228,20 +228,23 @@ function getOrCreateBotRound(roundId) {
 
 function getMasterRoomState() {
   const now = Date.now();
-  const roundData = getOrCreateBotRound(currentRoundId);
+  const epochRoundId = Math.floor(now / ROUND_DURATION_MS);
+  const elapsedInRound = now % ROUND_DURATION_MS;
+  currentRoundId = epochRoundId;
+  const roundData = getOrCreateBotRound(epochRoundId);
   const allTaken = Array.from(roundData.tickets.keys());
 
-  // 1. IF NO TICKETS ARE TAKEN: THE GAME NEVER STARTS! IT STAYS IN LOBBY WAITING FOR PLAYERS!
+  // 1. IF NO TICKETS ARE TAKEN:
+  // Game never plays empty rounds, but the seconds countdown MUST keep ticking down in an unbroken 45s loop!
   if (allTaken.length === 0) {
-    roundData.firstTicketAt = null;
-    roundData.forcedStartAt = null;
+    const remainingSeconds = Math.max(1, Math.ceil((customLobbyMs - (now % customLobbyMs)) / 1000));
     return {
       success: true,
       serverTime: now,
-      roundId: currentRoundId,
+      roundId: epochRoundId,
       phase: "lobby",
-      countdown: Math.round(customLobbyMs / 1000),
-      elapsedInRound: 0,
+      countdown: remainingSeconds,
+      elapsedInRound,
       drawnBalls: [],
       currentBall: null,
       totalRoomTickets: 0,
@@ -254,67 +257,31 @@ function getMasterRoomState() {
     };
   }
 
-  // 2. AT LEAST ONE TICKET IS TAKEN: Start countdown if not started!
-  if (!roundData.firstTicketAt) {
-    roundData.firstTicketAt = now;
-  }
-
-  let elapsed = now - roundData.firstTicketAt;
-  if (roundData.forcedStartAt && now >= roundData.forcedStartAt && elapsed < customLobbyMs) {
-    elapsed = customLobbyMs + (now - roundData.forcedStartAt);
-  }
-
+  // 2. AT LEAST ONE TICKET IS TAKEN: Universal synchronized timeline
   const roundDuration = customLobbyMs + CALLING_MS + VICTORY_MS;
-  const balls = getDeterministicBalls(currentRoundId);
+  const balls = getDeterministicBalls(epochRoundId);
 
   let phase = "lobby";
   let countdown = 0;
   let drawnBalls = [];
 
-  if (elapsed < customLobbyMs) {
-    // 2A. Lobby Betting Phase
+  if (elapsedInRound < customLobbyMs) {
+    // 2A. Lobby Betting Phase (0 to 45s)
     phase = "lobby";
-    countdown = Math.max(0, Math.ceil((customLobbyMs - elapsed) / 1000));
+    countdown = Math.max(0, Math.ceil((customLobbyMs - elapsedInRound) / 1000));
     drawnBalls = [];
-  } else if (elapsed < customLobbyMs + CALLING_MS) {
-    // 2B. Live Calling Phase
+  } else if (elapsedInRound < customLobbyMs + CALLING_MS) {
+    // 2B. Live Calling Phase (45s to 95s: 20 balls @ 2.5s)
     phase = "game";
     countdown = 0;
-    const gameElapsed = elapsed - customLobbyMs;
+    const gameElapsed = elapsedInRound - customLobbyMs;
     const count = Math.min(20, Math.floor(gameElapsed / BALL_INTERVAL_MS) + 1);
     drawnBalls = balls.slice(0, count).reverse();
-  } else if (elapsed < roundDuration) {
-    // 2C. Victory Celebration Phase
-    phase = "victory";
-    countdown = Math.max(0, Math.ceil((roundDuration - elapsed) / 1000));
-    drawnBalls = balls.slice(0, 20).reverse();
   } else {
-    // 2D. Victory finished! Advance cleanly to next round
-    currentRoundId += 1;
-    const nextRound = getOrCreateBotRound(currentRoundId);
-    if (serverBotSettings.isBotSystemActive && (serverBotSettings.minBots || 0) > 0) {
-      const botMin = Math.max(1, serverBotSettings.minBots);
-      const botMax = Math.max(botMin, serverBotSettings.maxBots || botMin);
-      const count = Math.floor(Math.random() * (botMax - botMin + 1)) + botMin;
-      injectBotsIntoRound(nextRound, count);
-    }
-    return {
-      success: true,
-      serverTime: now,
-      roundId: currentRoundId,
-      phase: "lobby",
-      countdown: Math.round(customLobbyMs / 1000),
-      elapsedInRound: 0,
-      drawnBalls: [],
-      currentBall: null,
-      totalRoomTickets: nextRound.tickets.size,
-      takenTickets: Array.from(nextRound.tickets.keys()),
-      takenDetails: {},
-      jackpot: nextRound.tickets.size * 10,
-      winnerInfo: null,
-      playersCount: 0,
-      lobbyDuration: customLobbyMs,
-    };
+    // 2C. Victory Celebration Phase (95s to 98s)
+    phase = "victory";
+    countdown = Math.max(0, Math.ceil((roundDuration - elapsedInRound) / 1000));
+    drawnBalls = balls.slice(0, 20).reverse();
   }
 
   const currentBall = drawnBalls[0] || null;
@@ -345,10 +312,10 @@ function getMasterRoomState() {
   return {
     success: true,
     serverTime: now,
-    roundId: currentRoundId,
+    roundId: epochRoundId,
     phase,
     countdown,
-    elapsedInRound: elapsed,
+    elapsedInRound,
     drawnBalls,
     currentBall,
     totalRoomTickets,
