@@ -1,5 +1,5 @@
 import { Dispatch, SetStateAction } from "react";
-import { Timer, Coins, Lock, Sparkles, Flame, Users } from "lucide-react";
+import { Timer, Coins, Lock, Sparkles, Flame, Users, Check } from "lucide-react";
 import { AnnouncementBar } from "@/components/phoenix/AnnouncementBar";
 import { WalletBar } from "@/components/phoenix/WalletBar";
 import { LangToggle } from "@/components/phoenix/LangToggle";
@@ -179,17 +179,17 @@ export function LobbyView({
         </div>
       </div>
 
-      {totalRoomTickets === 0 && (
+      {totalRoomTickets === 0 && !isGameStarted && (
         <div className="mx-3 mt-2.5 flex items-center justify-center gap-2 rounded-2xl border border-gold/40 bg-gold/10 px-3 py-2 text-xs font-black text-gold shadow-sm">
-          <Coins className="h-4 w-4 shrink-0 text-gold animate-bounce" />
-          <span>ጨዋታው በ {mm}:{ss} ውስጥ ይጀምራል — ካርቴላ ይምረጡ (+10 ETB የቀጥታ ጃክፖት)!</span>
+          <Timer className="h-4 w-4 shrink-0 text-gold animate-pulse" />
+          <span>ቆጣሪው በመቁጠር ላይ ({mm}:{ss}) — ሰው እስኪገባ ቆጣሪው እንደ አዲስ ይቀጥላል። ካርቴላ ይምረጡና ይጀምሩ!</span>
         </div>
       )}
 
-      {waitingForPlayers && totalRoomTickets > 0 && (
-        <div className="mx-3 mt-2.5 flex items-center justify-center gap-2 rounded-2xl border border-amber-500/40 bg-amber-500/10 px-3 py-2.5 text-xs font-black text-amber-400 shadow-sm animate-pulse">
-          <Users className="h-4 w-4 shrink-0 text-amber-400" />
-          <span>ጨዋታው ለመጀመር ቢያንስ 2 ተጫዋቾች ያስፈልጋሉ። ሌላ ተጫዋች በመጠበቅ ላይ...</span>
+      {totalRoomTickets > 0 && !isGameStarted && (
+        <div className="mx-3 mt-2.5 flex items-center justify-center gap-2 rounded-2xl border border-emerald-500/40 bg-emerald-500/10 px-3 py-2 text-xs font-black text-emerald-400 shadow-sm animate-pulse">
+          <Check className="h-4 w-4 shrink-0 text-emerald-400" />
+          <span>ተጫዋች ገብቷል ({totalRoomTickets} ካርቴላ)! ቆጣሪው {mm}:{ss} ሲያልቅ ጨዋታው በሁሉም ስልኮች እኩል ይጀምራል!</span>
         </div>
       )}
 
