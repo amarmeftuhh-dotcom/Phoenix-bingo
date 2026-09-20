@@ -250,14 +250,51 @@ export function App() {
   // Synchronized ball caller reference to prevent sound spam on reload
   const lastDrawnCountRef = useRef<number>(initialSnap.drawnBalls.length);
 
-  // 1. Synchronized Universal Game Room Loop (500ms precision sync)
+  // Synchronized active state refs so intervals never tear down or glitch during ticket selection
+  const confirmedTicketsRef = useRef(confirmedTickets);
+  confirmedTicketsRef.current = confirmedTickets;
+  const pendingTicketsRef = useRef(pendingTickets);
+  pendingTicketsRef.current = pendingTickets;
+  const serverTakenTicketsRef = useRef(serverTakenTickets);
+  serverTakenTicketsRef.current = serverTakenTickets;
+  const currentRoundIdRef = useRef(currentRoundId);
+  currentRoundIdRef.current = currentRoundId;
+  const isGameStartedRef = useRef(isGameStarted);
+  isGameStartedRef.current = isGameStarted;
+  totalRoomTicketsRef.current = totalRoomTickets;
+
+  // 1. Unbroken 1-second countdown ticker:
+  // "second mekutaru aykum yikutar gn sew kelal eda adiss yigamir sew esikgaba diras"
+  // The countdown NEVER stops, counts down every single second!
+  // If NO ONE has entered (sew kelela / totalRoomTickets === 0), it restarts back at 45!
+  // As soon as someone enters, it counts down to 0 and the game starts!
+  useEffect(() => {
+    const secondTicker = setInterval(() => {
+      if (isGameStartedRef.current) return;
+
+      setGlobalCountdown((prev) => {
+        if (prev > 1) {
+          return prev - 1;
+        }
+        // At 0: if room has no players, reset to 45 and keep ticking!
+        if (totalRoomTicketsRef.current === 0) {
+          return 45;
+        }
+        return 0;
+      });
+    }, 1000);
+
+    return () => clearInterval(secondTicker);
+  }, []);
+
+  // 2. Synchronized Universal Game Room Loop (500ms precision sync)
   useEffect(() => {
     // Initial fetch from server
-    fetchServerRoomState(currentRoundId);
+    fetchServerRoomState(currentRoundIdRef.current);
 
     // Subscribe to multi-device updates (instant push via SSE)
     const unsubscribe = subscribeRoomSync((serverData) => {
-      const activeUserTickets = new Set([...confirmedTickets, ...pendingTickets]);
+      const activeUserTickets = new Set([...confirmedTicketsRef.current, ...pendingTicketsRef.current]);
       if (serverData.takenTickets) {
         setServerTakenTickets(serverData.takenTickets);
         setTakenTickets(serverData.takenTickets.filter((t) => !activeUserTickets.has(t)));
@@ -268,10 +305,10 @@ export function App() {
       if (typeof serverData.totalRoomTickets === "number") {
         setTotalRoomTickets(serverData.totalRoomTickets);
       }
-      if (typeof serverData.countdown === "number") {
+      if (typeof serverData.countdown === "number" && !isGameStartedRef.current) {
         setGlobalCountdown(serverData.countdown);
       }
-      if (serverData.roundId !== currentRoundId) {
+      if (serverData.roundId !== currentRoundIdRef.current) {
         setCurrentRoundId(serverData.roundId);
       }
     });
@@ -280,7 +317,7 @@ export function App() {
     const handleRemoteTicketClaimed = (e: any) => {
       const detail = e.detail;
       if (detail && detail.ticketNum) {
-        const activeUserTickets = new Set([...confirmedTickets, ...pendingTickets]);
+        const activeUserTickets = new Set([...confirmedTicketsRef.current, ...pendingTicketsRef.current]);
         if (!activeUserTickets.has(detail.ticketNum)) {
           const taker = detail.userName ? `በ ${detail.userName}` : "በሌላ ተጫዋች";
           setLiveTicketNotice(`⚡ ካርቴላ #${detail.ticketNum} ${taker} ተይዟል (+10 ETB የቀጥታ ጃክፖት)!`);
@@ -293,22 +330,22 @@ export function App() {
 
     // 600ms interval to fetch latest authoritative server room state across connected phones
     const pollInterval = setInterval(() => {
-      fetchServerRoomState(currentRoundId);
+      fetchServerRoomState(currentRoundIdRef.current);
     }, 600);
 
     const syncInterval = setInterval(() => {
-      const activeUserTickets = Array.from(new Set([...confirmedTickets, ...pendingTickets]));
+      const activeUserTickets = Array.from(new Set([...confirmedTicketsRef.current, ...pendingTicketsRef.current]));
       const player = getStoredPlayer();
       const serverState = getLatestServerState();
 
       // Use authoritative server state when available, or mathematically identical local engine
-      const snap = getLiveRoundSnapshot(activeUserTickets, serverTakenTickets, {
+      const snap = getLiveRoundSnapshot(activeUserTickets, serverTakenTicketsRef.current, {
         name: player.name,
         phone: player.phone,
       });
 
       const effectiveRoundId = serverState?.roundId ?? snap.roundId;
-      const allKnownTaken = Array.from(new Set([...(serverState?.takenTickets || []), ...serverTakenTickets]));
+      const allKnownTaken = Array.from(new Set([...(serverState?.takenTickets || []), ...serverTakenTicketsRef.current]));
       const effectiveTakenTickets = allKnownTaken.filter(
         (t) => !activeUserTickets.includes(t)
       );
@@ -321,19 +358,19 @@ export function App() {
         : (effectiveTotalTickets * 10);
 
       // CRITICAL: If no active cards are taken across the room:
-      // The game NEVER starts, never calls balls, never chooses winners, and countdown stays ready at 45s!
+      // The game stays in lobby, never calls balls or picks fake winners.
+      // But the seconds countdown MUST keep ticking down in live synchronization!
       let effectivePhase = serverState?.phase ?? snap.phase;
       let effectiveCountdown = serverState?.countdown ?? snap.countdown;
       let effectiveDrawnBalls = serverState?.drawnBalls ?? snap.drawnBalls;
 
       if (effectiveTotalTickets === 0) {
         effectivePhase = "lobby";
-        effectiveCountdown = 45;
         effectiveDrawnBalls = [];
       }
 
       // A. New Round Rollover (Epoch boundary reached)
-      if (effectiveRoundId !== currentRoundId) {
+      if (effectiveRoundId !== currentRoundIdRef.current) {
         setCurrentRoundId(effectiveRoundId);
         setConfirmedTickets([]);
         setPendingTickets([]);
@@ -353,7 +390,9 @@ export function App() {
       }
 
       // B. Sync Live Room Meta & Timer
-      setGlobalCountdown(effectiveCountdown);
+      if (typeof serverState?.countdown === "number" && !isGameStartedRef.current) {
+        setGlobalCountdown(serverState.countdown);
+      }
       setTakenTickets(effectiveTakenTickets);
       setLiveJackpot(effectiveJackpot);
       setTotalRoomTickets(effectiveTotalTickets);
@@ -369,8 +408,8 @@ export function App() {
         setIsGameStarted(true);
 
         // Auto-confirm pending tickets when round starts
-        if (pendingTickets.length > 0) {
-          const allConfirmed = Array.from(new Set([...confirmedTickets, ...pendingTickets]));
+        if (pendingTicketsRef.current.length > 0) {
+          const allConfirmed = Array.from(new Set([...confirmedTicketsRef.current, ...pendingTicketsRef.current]));
           setConfirmedTickets(allConfirmed);
           setPendingTickets([]);
           saveUserRoundTickets(effectiveRoundId, allConfirmed);
@@ -398,7 +437,7 @@ export function App() {
       window.removeEventListener("phoenix_ticket_claimed_live", handleRemoteTicketClaimed);
       unsubscribe();
     };
-  }, [currentRoundId, confirmedTickets, pendingTickets, serverTakenTickets]);
+  }, [currentRoundId]);
 
   // 2. Initialize ticket boards whenever active tickets change
   useEffect(() => {
