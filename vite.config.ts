@@ -272,7 +272,8 @@ function liveRoomSyncPlugin(): Plugin {
               // 🔴 NO PLAYERS HAVE PURCHASED CARTELAS:
               // DO NOT START THE GAME! RESET TO 45 AND COUNT DOWN AGAIN!
               gameClock = gameTimerSetting; // resets to 45
-              broadcastMasterState({ type: 'TIMER_RESET' });
+              currentRoundId = Math.floor(Math.random() * 90000) + 10000;
+              broadcastMasterState({ type: 'TIMER_RESET', roundId: currentRoundId, countdown: 45 });
             }
           } else {
             broadcastMasterState({ type: 'TICK' });
