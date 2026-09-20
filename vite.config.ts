@@ -104,49 +104,32 @@ function checkBingoPattern(grid: boolean[][]): boolean {
   return false;
 }
 
+function checkTicketBingo(ticketId: number, called: number[]): boolean {
+  const board = generateBoard(ticketId);
+  const calledSet = new Set(called);
+  const grid: boolean[][] = Array.from({ length: 5 }, () => Array(5).fill(false));
+  board.forEach((cell) => {
+    grid[cell.row]![cell.col] = cell.value === "FREE" || (typeof cell.value === "number" && calledSet.has(cell.value));
+  });
+  return checkBingoPattern(grid);
+}
+
 function evaluateWinner(tickets: number[], balls: number[]) {
   if (!tickets || tickets.length === 0) {
     return { winningTicket: 0, winningBallCount: 0 };
   }
-  const boards = tickets.map((t) => ({ t, cells: generateBoard(t) }));
-
-  // 1. Check if any ticket hits true Bingo in balls 4 to 20
-  for (let k = 4; k <= 20; k++) {
-    const drawnSet = new Set(balls.slice(0, k));
-    for (const b of boards) {
-      const grid: boolean[][] = Array.from({ length: 5 }, () => Array(5).fill(false));
-      b.cells.forEach((cell) => {
-        grid[cell.row]![cell.col] = cell.value === "FREE" || (typeof cell.value === "number" && drawnSet.has(cell.value));
-      });
-      if (checkBingoPattern(grid)) {
-        return { winningTicket: b.t, winningBallCount: k };
+  for (let k = 4; k <= balls.length; k++) {
+    const subBalls = balls.slice(0, k);
+    for (const t of tickets) {
+      if (checkTicketBingo(t, subBalls)) {
+        return { winningTicket: t, winningBallCount: k };
       }
     }
   }
-
-  // 2. If no card hits full 5-line Bingo by ball 20, the ticket with highest matches among participants wins!
-  const drawnSet20 = new Set(balls.slice(0, 20));
-  let bestTicket = tickets[0]!;
-  let maxMatched = -1;
-
-  for (const b of boards) {
-    let matched = 0;
-    b.cells.forEach((cell) => {
-      if (cell.value === "FREE" || (typeof cell.value === "number" && drawnSet20.has(cell.value))) {
-        matched++;
-      }
-    });
-    if (matched > maxMatched) {
-      maxMatched = matched;
-      bestTicket = b.t;
-    }
-  }
-
-  return { winningTicket: bestTicket, winningBallCount: 20 };
+  return { winningTicket: tickets[0] || 0, winningBallCount: balls.length };
 }
 
 function getDeterministicOpponents(_roundId: number) {
-  // Only real players: no automatic fake opponents or phantom 40 Birr jackpot!
   return [];
 }
 
@@ -173,174 +156,80 @@ let serverBotSettings = {
   botWinnerForce: "ai",
 };
 
-interface ServerRoundData {
-  tickets: Map<number, { userId: string; userName: string; userPhone?: string; time: number }>;
-  firstTicketAt: number | null;
-  forcedStartAt: number | null;
-}
-
-function injectBotsIntoRound(roundData: ServerRoundData, count: number) {
-  const available: number[] = [];
-  for (let i = 1; i <= 520; i++) {
-    if (!roundData.tickets.has(i)) available.push(i);
-  }
-  for (let i = available.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [available[i], available[j]] = [available[j], available[i]];
-  }
-
-  const toAdd = Math.min(count, available.length);
-  for (let i = 0; i < toAdd; i++) {
-    const ticketNum = available[i];
-    const name = ETHIOPIAN_BOT_NAMES[Math.floor(Math.random() * ETHIOPIAN_BOT_NAMES.length)];
-    const phone = generateBotPhone();
-    const botId = `bot_${Math.random().toString(36).substring(2, 8)}`;
-    roundData.tickets.set(ticketNum, {
-      userId: botId,
-      userName: name,
-      userPhone: phone,
-      time: Date.now(),
-    });
-  }
-
-  if (toAdd > 0 && !roundData.firstTicketAt) {
-    roundData.firstTicketAt = Date.now();
-  }
-}
-
 function liveRoomSyncPlugin(): Plugin {
-  // Master Clock & Room Store
-  let customLobbyMs = 45000;
-  let currentRoundId = Math.floor(Date.now() / ROUND_DURATION_MS);
+  // Authoritative Central Game State Engine (Spark Bingo architecture)
+  let gameState: 'WAITING' | 'PLAYING' | 'FINISHED' = 'WAITING';
+  let gameClock = 45; // Default 45 seconds countdown
+  let gameTimerSetting = 45; // Resets back to 45 if no players take a cartela
+  let ballTimer = 3; // 3 seconds interval between drawn balls
+  let currentRoundId = Math.floor(Math.random() * 90000) + 10000;
 
-  const roundsMap = new Map<number, ServerRoundData>();
+  // Participating tickets: Map<ticketNumber, { userId, userName, userPhone, time }>
+  const activeTickets = new Map<number, { userId: string; userName: string; userPhone?: string; time: number }>();
 
-  // Active SSE connection clients
+  let calledNumbers: number[] = [];
+  let currentDrawSequence: number[] = [];
+  let winnerInfo: any = null;
+
+  // Active SSE clients
   const sseClients = new Set<any>();
 
-  function cleanOldRounds(latestRoundId: number) {
-    if (roundsMap.size > 15) {
-      for (const rId of roundsMap.keys()) {
-        if (rId < latestRoundId - 5) {
-          roundsMap.delete(rId);
-        }
-      }
+  function injectBots(count: number) {
+    const available: number[] = [];
+    for (let i = 1; i <= 520; i++) {
+      if (!activeTickets.has(i)) available.push(i);
     }
-  }
-
-  function getOrCreateRound(roundId: number): ServerRoundData {
-    let roundData = roundsMap.get(roundId);
-    if (!roundData) {
-      roundData = {
-        tickets: new Map(),
-        firstTicketAt: null,
-        forcedStartAt: null,
-      };
-      roundsMap.set(roundId, roundData);
+    for (let i = available.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      const temp = available[i]!;
+      available[i] = available[j]!;
+      available[j] = temp;
     }
-    cleanOldRounds(roundId);
-    return roundData;
+    const toAdd = Math.min(count, available.length);
+    for (let i = 0; i < toAdd; i++) {
+      const ticketNum = available[i]!;
+      const name = ETHIOPIAN_BOT_NAMES[Math.floor(Math.random() * ETHIOPIAN_BOT_NAMES.length)]!;
+      const phone = generateBotPhone();
+      const botId = `bot_${Math.random().toString(36).substring(2, 8)}`;
+      activeTickets.set(ticketNum, {
+        userId: botId,
+        userName: name,
+        userPhone: phone,
+        time: Date.now(),
+      });
+    }
   }
 
   function getMasterRoomState() {
-    const now = Date.now();
-    const epochRoundId = Math.floor(now / ROUND_DURATION_MS);
-    const elapsedInRound = now % ROUND_DURATION_MS;
-    currentRoundId = epochRoundId;
-    const roundData = getOrCreateRound(epochRoundId);
-    const allTaken = Array.from(roundData.tickets.keys());
-
-    // 1. IF NO TICKETS ARE TAKEN:
-    // Game never plays empty rounds, but the seconds countdown MUST keep ticking down in real time!
-    if (allTaken.length === 0) {
-      const remainingSeconds = Math.max(0, Math.ceil((customLobbyMs - (elapsedInRound % customLobbyMs)) / 1000));
-      return {
-        success: true,
-        serverTime: now,
-        roundId: epochRoundId,
-        phase: 'lobby',
-        countdown: remainingSeconds,
-        elapsedInRound,
-        drawnBalls: [],
-        currentBall: null,
-        totalRoomTickets: 0,
-        takenTickets: [],
-        takenDetails: {},
-        jackpot: 0,
-        winnerInfo: null,
-        playersCount: 0,
-        lobbyDuration: customLobbyMs,
-      };
-    }
-
-    // 2. AT LEAST ONE TICKET IS TAKEN: Universal synchronized timeline
-    const roundDuration = customLobbyMs + CALLING_MS + VICTORY_MS;
-    const balls = getDeterministicBalls(epochRoundId);
-
-    let phase: 'lobby' | 'game' | 'victory' = 'lobby';
-    let countdown = 0;
-    let drawnBalls: number[] = [];
-
-    if (elapsedInRound < customLobbyMs) {
-      // 2A. Lobby Betting Phase (0 to 45s)
-      phase = 'lobby';
-      countdown = Math.max(0, Math.ceil((customLobbyMs - elapsedInRound) / 1000));
-      drawnBalls = [];
-    } else if (elapsedInRound < customLobbyMs + CALLING_MS) {
-      // 2B. Live Calling Phase (45s to 95s: 20 balls @ 2.5s)
-      phase = 'game';
-      countdown = 0;
-      const gameElapsed = elapsedInRound - customLobbyMs;
-      const count = Math.min(20, Math.floor(gameElapsed / BALL_INTERVAL_MS) + 1);
-      drawnBalls = balls.slice(0, count).reverse();
-    } else {
-      // 2C. Victory Celebration Phase (95s to 98s)
-      phase = 'victory';
-      countdown = Math.max(0, Math.ceil((roundDuration - elapsedInRound) / 1000));
-      drawnBalls = balls.slice(0, 20).reverse();
-    }
-
-    const currentBall = drawnBalls[0] || null;
+    const allTaken = Array.from(activeTickets.keys());
     const details: Record<number, { userId: string; userName: string; userPhone?: string }> = {};
     const uniqueUsers = new Set<string>();
 
-    for (const [tNum, info] of roundData.tickets.entries()) {
+    for (const [tNum, info] of activeTickets.entries()) {
       details[tNum] = { userId: info.userId, userName: info.userName, userPhone: info.userPhone };
       uniqueUsers.add(info.userId);
     }
 
-    // Evaluate winner strictly among participating tickets
-    const { winningTicket, winningBallCount } = evaluateWinner(allTaken, balls);
-    const winnerRecord = winningTicket ? details[winningTicket] : null;
-    const winnerInfo = winningTicket
-      ? {
-          ticket: winningTicket,
-          winningBallCount: winningBallCount || 20,
-          name: winnerRecord?.userName || 'ተጫዋች',
-          phone: winnerRecord?.userPhone || '',
-          userId: winnerRecord?.userId || '',
-        }
-      : null;
-
+    const phase = gameState === 'WAITING' ? 'lobby' : (gameState === 'PLAYING' ? 'game' : 'victory');
     const totalRoomTickets = allTaken.length;
     const jackpot = totalRoomTickets * 10;
 
     return {
       success: true,
-      serverTime: now,
-      roundId: epochRoundId,
+      serverTime: Date.now(),
+      roundId: currentRoundId,
+      gameState,
       phase,
-      countdown,
-      elapsedInRound,
-      drawnBalls,
-      currentBall,
+      countdown: gameClock,
+      drawnBalls: [...calledNumbers].reverse(),
+      currentBall: calledNumbers[calledNumbers.length - 1] || null,
       totalRoomTickets,
       takenTickets: allTaken,
       takenDetails: details,
       jackpot,
       winnerInfo,
       playersCount: uniqueUsers.size,
-      lobbyDuration: customLobbyMs,
+      lobbyDuration: gameTimerSetting * 1000,
     };
   }
 
@@ -363,9 +252,92 @@ function liveRoomSyncPlugin(): Plugin {
     name: 'live-room-sync-plugin',
     apply: 'serve',
     configureServer(server) {
-      // Authoritative 1000ms Server Master Clock Ticker (Only runs during dev server)
+      // Authoritative 1000ms Master Server Clock Loop
       const ticker = setInterval(() => {
-        broadcastMasterState({ type: "TICK" });
+        if (gameState === 'WAITING') {
+          gameClock--;
+
+          if (gameClock <= 0) {
+            // 🔴 45 SECONDS REACHED!
+            if (activeTickets.size > 0) {
+              // PLAYERS ARE READY: START GAME FOR EVERYONE AT THE SAME SECOND!
+              gameState = 'PLAYING';
+              gameClock = 0;
+              ballTimer = 2; // first ball in 2 seconds
+              currentDrawSequence = Array.from({ length: 75 }, (_, i) => i + 1).sort(() => Math.random() - 0.5);
+              calledNumbers = [];
+              winnerInfo = null;
+              broadcastMasterState({ type: 'GAME_STARTED' });
+            } else {
+              // 🔴 NO PLAYERS HAVE PURCHASED CARTELAS:
+              // DO NOT START THE GAME! RESET TO 45 AND COUNT DOWN AGAIN!
+              gameClock = gameTimerSetting; // resets to 45
+              broadcastMasterState({ type: 'TIMER_RESET' });
+            }
+          } else {
+            broadcastMasterState({ type: 'TICK' });
+          }
+        } else if (gameState === 'PLAYING') {
+          ballTimer--;
+          if (ballTimer <= 0) {
+            ballTimer = 3; // next ball in 3 seconds
+            if (currentDrawSequence.length > 0) {
+              const nextBall = currentDrawSequence.pop()!;
+              calledNumbers.push(nextBall);
+
+              // Check if any participating ticket won
+              let winTicket = 0;
+              for (const tNum of activeTickets.keys()) {
+                if (checkTicketBingo(tNum, calledNumbers)) {
+                  winTicket = tNum;
+                  break;
+                }
+              }
+
+              if (winTicket > 0) {
+                gameState = 'FINISHED';
+                gameClock = 12; // 12 seconds victory celebration
+                const owner = activeTickets.get(winTicket);
+                winnerInfo = {
+                  ticket: winTicket,
+                  winningBallCount: calledNumbers.length,
+                  name: owner?.userName || 'ተጫዋች',
+                  phone: owner?.userPhone || '',
+                  userId: owner?.userId || '',
+                  prize: activeTickets.size * 10,
+                };
+                broadcastMasterState({ type: 'GAME_WINNER', winnerInfo });
+              } else if (calledNumbers.length >= 75) {
+                gameState = 'FINISHED';
+                gameClock = 10;
+                broadcastMasterState({ type: 'GAME_FINISHED' });
+              } else {
+                broadcastMasterState({ type: 'NEW_BALL', ball: nextBall });
+              }
+            } else {
+              gameState = 'FINISHED';
+              gameClock = 10;
+              broadcastMasterState({ type: 'GAME_FINISHED' });
+            }
+          } else {
+            broadcastMasterState({ type: 'TICK' });
+          }
+        } else if (gameState === 'FINISHED') {
+          gameClock--;
+          if (gameClock <= 0) {
+            // Next round reset:
+            gameState = 'WAITING';
+            gameClock = gameTimerSetting; // 45s
+            activeTickets.clear();
+            calledNumbers = [];
+            currentDrawSequence = [];
+            winnerInfo = null;
+            currentRoundId = Math.floor(Math.random() * 90000) + 10000;
+            broadcastMasterState({ type: 'ROUND_RESET', roundId: currentRoundId });
+          } else {
+            broadcastMasterState({ type: 'TICK' });
+          }
+        }
       }, 1000);
       if (ticker.unref) ticker.unref();
 
@@ -427,7 +399,7 @@ function liveRoomSyncPlugin(): Plugin {
           req.on('end', () => {
             try {
               const body = JSON.parse(bodyStr || '{}');
-              const { roundId, ticketNum, userId, userName, userPhone } = body;
+              const { ticketNum, userId, userName, userPhone } = body;
 
               if (typeof ticketNum !== 'number' || !userId) {
                 res.statusCode = 400;
@@ -435,17 +407,26 @@ function liveRoomSyncPlugin(): Plugin {
                 return;
               }
 
-              const currentState = getMasterRoomState();
-              const effectiveRoundId = currentState.roundId;
-              const roundData = getOrCreateRound(effectiveRoundId);
+              // If game has already started, cannot buy cartela for current round
+              if (gameState !== 'WAITING') {
+                res.setHeader('Content-Type', 'application/json');
+                res.end(
+                  JSON.stringify({
+                    ...getMasterRoomState(),
+                    success: false,
+                    error: 'GAME_ALREADY_STARTED',
+                  })
+                );
+                return;
+              }
 
               // Check if ticket is already taken by a different user
-              const existing = roundData.tickets.get(ticketNum);
+              const existing = activeTickets.get(ticketNum);
               if (existing && existing.userId !== userId) {
                 res.setHeader('Content-Type', 'application/json');
                 res.end(
                   JSON.stringify({
-                    ...currentState,
+                    ...getMasterRoomState(),
                     success: false,
                     error: 'TICKET_ALREADY_TAKEN',
                   })
@@ -454,17 +435,12 @@ function liveRoomSyncPlugin(): Plugin {
               }
 
               // Claim ticket
-              roundData.tickets.set(ticketNum, {
+              activeTickets.set(ticketNum, {
                 userId,
                 userName: userName || 'ተጫዋች',
                 userPhone: userPhone || '',
                 time: Date.now(),
               });
-
-              // If this is the first ticket claimed, start the lobby timer now!
-              if (!roundData.firstTicketAt) {
-                roundData.firstTicketAt = Date.now();
-              }
 
               // Instantly broadcast to all connected phones via SSE
               broadcastMasterState({
@@ -496,17 +472,22 @@ function liveRoomSyncPlugin(): Plugin {
               const body = JSON.parse(bodyStr || '{}');
               const { ticketNum, userId } = body;
 
-              const currentState = getMasterRoomState();
-              const effectiveRoundId = currentState.roundId;
-              const roundData = getOrCreateRound(effectiveRoundId);
-              const existing = roundData.tickets.get(ticketNum);
+              if (gameState !== 'WAITING') {
+                res.setHeader('Content-Type', 'application/json');
+                res.end(
+                  JSON.stringify({
+                    ...getMasterRoomState(),
+                    success: false,
+                    error: 'CANNOT_UNSELECT_DURING_GAME',
+                  })
+                );
+                return;
+              }
 
+              const existing = activeTickets.get(ticketNum);
               // Allow releasing if owned or admin
               if (!existing || !userId || existing.userId === userId) {
-                roundData.tickets.delete(ticketNum);
-                if (roundData.tickets.size === 0) {
-                  roundData.firstTicketAt = null;
-                }
+                activeTickets.delete(ticketNum);
               }
 
               // Broadcast change
@@ -538,47 +519,49 @@ function liveRoomSyncPlugin(): Plugin {
               const body = JSON.parse(bodyStr || '{}');
               const { action, lobbySeconds } = body;
 
-              const state = getMasterRoomState();
-              const roundData = getOrCreateRound(state.roundId);
-
               if (action === 'force_start') {
-                roundData.forcedStartAt = Date.now();
-              } else if (action === 'next_round') {
-                currentRoundId += 1;
+                if (activeTickets.size === 0) {
+                  injectBots(2);
+                }
+                gameState = 'PLAYING';
+                gameClock = 0;
+                ballTimer = 2;
+                currentDrawSequence = Array.from({ length: 75 }, (_, i) => i + 1).sort(() => Math.random() - 0.5);
+                calledNumbers = [];
+                winnerInfo = null;
+              } else if (action === 'next_round' || action === 'reset') {
+                gameState = 'WAITING';
+                gameClock = gameTimerSetting;
+                activeTickets.clear();
+                calledNumbers = [];
+                currentDrawSequence = [];
+                winnerInfo = null;
+                currentRoundId = Math.floor(Math.random() * 90000) + 10000;
               } else if (action === 'set_lobby_seconds' && typeof lobbySeconds === 'number') {
-                customLobbyMs = Math.max(10000, Math.min(120000, lobbySeconds * 1000));
+                gameTimerSetting = Math.max(10, Math.min(120, lobbySeconds));
+                if (gameState === 'WAITING') {
+                  gameClock = gameTimerSetting;
+                }
               } else if (action === 'inject_bots') {
                 const count = typeof body.botCount === 'number' ? Math.max(1, Math.min(200, body.botCount)) : 10;
-                injectBotsIntoRound(roundData, count);
+                injectBots(count);
               } else if (action === 'clear_bots') {
-                for (const [tNum, info] of Array.from(roundData.tickets.entries())) {
+                for (const [tNum, info] of Array.from(activeTickets.entries())) {
                   if (info.userId.startsWith('bot_')) {
-                    roundData.tickets.delete(tNum);
+                    activeTickets.delete(tNum);
                   }
-                }
-                if (roundData.tickets.size === 0) {
-                  roundData.firstTicketAt = null;
-                  roundData.forcedStartAt = null;
                 }
               } else if (action === 'update_bot_settings' && body.botSettings) {
                 serverBotSettings = { ...serverBotSettings, ...body.botSettings };
-                if (serverBotSettings.isBotSystemActive && roundData.tickets.size === 0 && (serverBotSettings.minBots || 10) > 0) {
-                  injectBotsIntoRound(roundData, serverBotSettings.minBots || 10);
+                if (serverBotSettings.isBotSystemActive && activeTickets.size === 0 && (serverBotSettings.minBots || 10) > 0) {
+                  injectBots(serverBotSettings.minBots || 10);
                 } else if (!serverBotSettings.isBotSystemActive) {
-                  for (const [tNum, info] of Array.from(roundData.tickets.entries())) {
+                  for (const [tNum, info] of Array.from(activeTickets.entries())) {
                     if (info.userId.startsWith('bot_')) {
-                      roundData.tickets.delete(tNum);
+                      activeTickets.delete(tNum);
                     }
                   }
-                  if (roundData.tickets.size === 0) {
-                    roundData.firstTicketAt = null;
-                    roundData.forcedStartAt = null;
-                  }
                 }
-              } else if (action === 'reset') {
-                roundData.tickets.clear();
-                roundData.firstTicketAt = null;
-                roundData.forcedStartAt = null;
               }
 
               broadcastMasterState({ type: 'ADMIN_ACTION', action, time: Date.now() });
