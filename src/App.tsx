@@ -318,7 +318,19 @@ export function App() {
       const detail = e.detail;
       if (detail && detail.ticketNum) {
         const activeUserTickets = new Set([...confirmedTicketsRef.current, ...pendingTicketsRef.current]);
-        if (!activeUserTickets.has(detail.ticketNum)) {
+        
+        // If it was in our pending tickets, another player beat us atomically to the server/database!
+        if (pendingTicketsRef.current.includes(detail.ticketNum)) {
+          buzz([20, 50, 20]);
+          setPlayWallet((prev) => prev + STAKE_PER_TICKET);
+          setPendingTickets((prev) => {
+            const filtered = prev.filter((x) => x !== detail.ticketNum);
+            saveUserRoundTickets(currentRoundIdRef.current, filtered);
+            return filtered;
+          });
+          setPromoToast(`❌ ይቅርታ! ካርቴላ #${detail.ticketNum} በሌላ ተጫዋች ተይዟል (Already taken by another player). 10 ETB ተመልሷል።`);
+          setTimeout(() => setPromoToast(null), 4000);
+        } else if (!activeUserTickets.has(detail.ticketNum)) {
           const taker = detail.userName ? `በ ${detail.userName}` : "በሌላ ተጫዋች";
           setLiveTicketNotice(`⚡ ካርቴላ #${detail.ticketNum} ${taker} ተይዟል (+10 ETB የቀጥታ ጃክፖት)!`);
           buzz(8);
@@ -579,26 +591,63 @@ export function App() {
     } catch {}
   };
 
-  // Optimistic Cartela Selection / Refund Handler with localStorage persistence
+  // Cartela Deselect / Cancel / Refund All Handler
+  const handleRefundAllTickets = () => {
+    if (isGameStarted) return;
+    const allUserTickets = Array.from(new Set([...pendingTickets, ...confirmedTickets]));
+    if (allUserTickets.length === 0) return;
+
+    allUserTickets.forEach((t) => {
+      releaseRemoteTicket(currentRoundId, t);
+    });
+
+    const refundAmount = allUserTickets.length * STAKE_PER_TICKET;
+    setPlayWallet((prev) => prev + refundAmount);
+    setPendingTickets([]);
+    setConfirmedTickets([]);
+    saveUserRoundTickets(currentRoundId, []);
+    addPlayerActivityLog({
+      type: "ticket_refund",
+      title: `↩️ ሁሉም ካርቴላዎች ተሰርዘዋል (${allUserTickets.length} ካርቴላ)`,
+      description: `በዙር #${currentRoundId} የተመረጡ ${allUserTickets.length} ካርቴላዎች ተሰርዘው +${refundAmount} ETB ተመላሽ ተደርጓል`,
+      amount: refundAmount,
+    });
+    buzz([20, 40]);
+    setPromoToast(`↩️ ሁሉም ካርቴላዎች ተሰርዘዋል (+${refundAmount} ETB ተመላሽ ተደርጓል)`);
+    setTimeout(() => setPromoToast(null), 3000);
+  };
+
+  // Optimistic Cartela Selection / Deselection (Refund) Handler with localStorage persistence
   const handleToggleTicket = (ticketNum: number) => {
     if (isGameStarted) return;
     buzz(10);
     const player = getStoredPlayer();
 
-    // If already selected: Refund 10 ETB back to Play Wallet
-    if (pendingTickets.includes(ticketNum)) {
+    // If already selected by user: Deselect / Cancel & Refund 10 ETB back to Play Wallet
+    if (pendingTickets.includes(ticketNum) || confirmedTickets.includes(ticketNum)) {
       const nextPending = pendingTickets.filter((x) => x !== ticketNum);
+      const nextConfirmed = confirmedTickets.filter((x) => x !== ticketNum);
       setPendingTickets(nextPending);
-      saveUserRoundTickets(currentRoundId, nextPending);
+      setConfirmedTickets(nextConfirmed);
+      saveUserRoundTickets(currentRoundId, [...nextPending, ...nextConfirmed]);
       releaseRemoteTicket(currentRoundId, ticketNum);
       setPlayWallet((prev) => prev + STAKE_PER_TICKET);
+      addPlayerActivityLog({
+        type: "ticket_refund",
+        title: `↩️ ካርቴላ #${ticketNum} ተሰርዟል (+10 ETB ተመላሽ)`,
+        description: `በዙር #${currentRoundId} ካርቴላ #${ticketNum} ተሰርዞ +10 ETB ተመላሽ ተደርጓል`,
+        amount: STAKE_PER_TICKET,
+      });
+      setPromoToast(`↩️ ካርቴላ #${ticketNum} ተሰርዟል (+10 ETB ተመላሽ ተደርጓል)`);
+      setTimeout(() => setPromoToast(null), 2500);
       return;
     }
 
     // Check if taken by another phone or room opponent
     if (takenTickets.includes(ticketNum) || serverTakenTickets.includes(ticketNum)) {
       buzz([20, 50, 20]);
-      alert(`ይህ ካርቴላ (#${ticketNum}) በሌላ ተጫዋች ተይዟል! እባክዎ ሌላ ካርቴላ ይምረጡ።`);
+      setPromoToast(`❌ ይቅርታ! ካርቴላ #${ticketNum} በሌላ ተጫዋች ተይዟል (Sorry, Card #${ticketNum} has already been taken by another player).`);
+      setTimeout(() => setPromoToast(null), 3500);
       return;
     }
 
@@ -641,17 +690,23 @@ export function App() {
       amount: -STAKE_PER_TICKET,
     });
 
-    // Authoritative Server Validation: If another phone took it in the same split-second, refund immediately!
-    claimRemoteTicket(currentRoundId, ticketNum, player.name, player.phone).then((success) => {
-      if (!success) {
+    // Authoritative Database/Server Validation: If another phone took it in the same split-second, refund immediately!
+    claimRemoteTicket(currentRoundId, ticketNum, player.name, player.phone).then((result) => {
+      if (!result.success) {
         buzz([20, 50, 20]);
-        alert(`❌ ካርቴላ #${ticketNum} አሁን በሌላ ተጫዋች ተይዟል! 10 ETB ገንዘብዎ ተመልሷል።`);
         setPlayWallet((prev) => prev + STAKE_PER_TICKET);
         setPendingTickets((prev) => {
           const filtered = prev.filter((x) => x !== ticketNum);
           saveUserRoundTickets(currentRoundId, filtered);
           return filtered;
         });
+        setServerTakenTickets((prev) => Array.from(new Set([...prev, ticketNum])));
+        setTakenTickets((prev) => Array.from(new Set([...prev, ticketNum])));
+        setPromoToast(result.message || `❌ ይቅርታ! ካርቴላ #${ticketNum} በሌላ ተጫዋች ተይዟል (Sorry, Card #${ticketNum} has already been taken by another player).`);
+        setTimeout(() => setPromoToast(null), 4000);
+      } else {
+        setPromoToast(result.message || `✅ ካርቴላ #${ticketNum} በተሳካ ሁኔታ ተይዟል (Card #${ticketNum} successfully reserved).`);
+        setTimeout(() => setPromoToast(null), 3000);
       }
     });
   };
@@ -822,6 +877,7 @@ export function App() {
             announcementText={announcementText}
             jackpot={liveJackpot}
             totalRoomTickets={totalRoomTickets}
+            onRefundAll={handleRefundAllTickets}
             onClaimBonus={() => {
               buzz([20, 50]);
               claimWelcomePlayBonus(15.0);
