@@ -28,10 +28,12 @@ export function LobbyView({
   jackpot,
   totalRoomTickets,
   onClaimBonus,
+  onRefundAll,
 }: {
   pendingTickets: number[];
   setPendingTickets: Dispatch<SetStateAction<number[]>>;
   onToggleTicket?: (n: number) => void;
+  onRefundAll?: () => void;
   takenTickets?: number[];
   mainWallet: number;
   playWallet: number;
@@ -246,19 +248,28 @@ export function LobbyView({
       {/* Selected Tickets Mini Preview Bar */}
       {pendingTickets.length > 0 && (
         <div className="mt-3 px-3">
-          <div className="flex items-center justify-between pb-1.5">
-            <span className="text-[11px] font-bold text-muted-foreground">
-              የተመረጡ ካርቴላዎች ቅድመ-ዕይታ (ቅነሳ፡ {pendingTickets.length * STAKE} ETB)
-            </span>
+          <div className="flex flex-wrap items-center justify-between gap-2 pb-2">
+            <div>
+              <span className="text-xs font-black text-foreground">
+                የመረጧቸው ካርቴላዎች ({pendingTickets.length} / {MAX_SELECT})
+              </span>
+              <p className="text-[10px] text-muted-foreground">
+                💡 ካርቴላውን ለመሰረዝ ከታች <b>✕ ሰርዝ</b> ይንኩ ወይም ከላይ ቁጥሩን በድጋሚ ይጫኑት (+10 ETB ተመላሽ)
+              </p>
+            </div>
             <button
               type="button"
               onClick={() => {
                 buzz(15);
-                setPendingTickets([]);
+                if (onRefundAll) {
+                  onRefundAll();
+                } else {
+                  [...pendingTickets].forEach((num) => toggle(num));
+                }
               }}
-              className="text-[11px] font-black text-destructive hover:underline"
+              className="flex items-center gap-1 rounded-xl border border-destructive/40 bg-destructive/15 px-2.5 py-1 text-xs font-black text-destructive hover:bg-destructive hover:text-white transition-all shadow-sm active:scale-95"
             >
-              ሁሉንም መልስ (Refund)
+              ✕ ሁሉንም ሰርዝና መልስ (Refund All)
             </button>
           </div>
           <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
