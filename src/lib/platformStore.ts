@@ -10,7 +10,7 @@
 
 export interface WeeklyActivityLog {
   id: string;
-  type: "ticket_bought" | "game_win" | "deposit" | "withdrawal" | "weekly_bonus";
+  type: "ticket_bought" | "game_win" | "deposit" | "withdrawal" | "weekly_bonus" | "ticket_refund";
   title: string;
   description: string;
   amount?: number;
