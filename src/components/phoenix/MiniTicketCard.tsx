@@ -21,10 +21,14 @@ export function MiniTicketCard({
         {onRemove && (
           <button
             type="button"
-            onClick={onRemove}
-            className="text-[10px] font-bold text-muted-foreground hover:text-destructive"
+            onClick={(e) => {
+              e.stopPropagation();
+              onRemove();
+            }}
+            className="flex items-center gap-1 rounded-md bg-rose-500/20 border border-rose-500/40 px-1.5 py-0.5 text-[9px] font-black text-rose-300 hover:bg-rose-600 hover:text-white transition-all active:scale-90 shadow-sm"
+            title={`ካርቴላ #${ticketNum} ሰርዝ (+10 ETB ተመላሽ)`}
           >
-            ✕
+            ✕ ሰርዝ (+10)
           </button>
         )}
       </div>
